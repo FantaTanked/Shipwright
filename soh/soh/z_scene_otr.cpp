@@ -206,6 +206,21 @@ bool Scene_CommandTransitionActorList(PlayState* play, SOH::ISceneCommand* cmd) 
     play->transiActorCtx.numActors = cmdActor->numTransitionActors;
     play->transiActorCtx.list = (TransitionActorEntry*)cmdActor->GetRawPointer();
 
+    // ship-gz fix: Actor_SpawnTransitionActors marks an entry "already spawned" by negating
+    // its id IN PLACE, and the matching actor's Destroy un-negates it on scene exit. On N64
+    // the list was re-DMA'd from ROM each scene load, so it always started positive. SoH
+    // instead points at a cached resource that is never reloaded, so the negation persists
+    // across re-entries. A savestate load wipes actors without running their Destroy, leaving
+    // ids stuck negative; on the next visit the spawn loop skips those entries and the
+    // transition actors (doors, crawlspace/loadzone En_Holl planes) never spawn, silently
+    // breaking room transitions. Restore the freshly-loaded invariant: all ids positive.
+    for (s32 i = 0; i < play->transiActorCtx.numActors; i++) {
+        TransitionActorEntry* entry = &play->transiActorCtx.list[i];
+        if (entry->id < 0) {
+            entry->id = -entry->id;
+        }
+    }
+
     return false;
 }
 

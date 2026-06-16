@@ -12,6 +12,8 @@
 #include "ResourceManagerHelpers.h"
 #include <fast/Fast3dWindow.h>
 #include <ship/Context.h>
+#include <ship/resource/GzArenaCache.h>
+#include <ship/utils/StrHash64.h>
 #include <ship/resource/File.h>
 #include <ship/window/Window.h>
 #include <soh/GameVersions.h>
@@ -921,6 +923,21 @@ void OTRGlobals::Initialize() {
     loader->RegisterResourceFactory(std::make_shared<SOH::ResourceFactoryBinaryBackgroundV0>(), RESOURCE_FORMAT_BINARY,
                                     "Background", static_cast<uint32_t>(SOH::ResourceType::SOH_Background), 0);
 
+    // ship-gz: arena-cache boot path (see ARENA_CACHE_DESIGN.md). Run this as early as
+    // possible -- right after factories are registered and archives are mounted, but
+    // BEFORE anything (langs, fonts, audio) loads resources into the arena. Otherwise
+    // those early resources sit in the region we overwrite when restoring the image.
+    //   gGzArenaCache=1    -> reuse resarena_cache.bin; generate it on a miss.
+    //   gGzArenaCacheGen=1 -> force a fresh generation pass (ignores any existing cache).
+    {
+        uint32_t buildHash = Ship::GzArenaCache_BuildKey();
+        if (CVarGetInteger("gGzArenaCacheGen", 0)) {
+            Ship::GzArenaCache_Generate(buildHash);
+        } else if (CVarGetInteger("gGzArenaCache", 0)) {
+            Ship::GzArenaCache_InitAtBoot(buildHash);
+        }
+    }
+
     Lang::LoadLangs();
 
     gSaveStateMgr = std::make_shared<SaveStateMgr>();
@@ -982,6 +999,7 @@ void OTRGlobals::Initialize() {
                 break;
         }
     }
+
 }
 
 OTRGlobals::~OTRGlobals() {
@@ -1754,6 +1772,30 @@ extern "C" void Graph_StartFrame() {
                     [[unlikely]] default : break;
             }
 
+            break;
+        }
+        case KbScancode::LUS_KB_F11: {
+            // ship-gz: export the current slot's savestate to disk (survives a restart).
+            if (CVarGetInteger(CVAR_CHEAT("SaveStatesEnabled"), 0) == 0) {
+                std::dynamic_pointer_cast<Fast::Fast3dGui>(Ship::Context::GetRawInstance()->GetWindow()->GetGui())
+                    ->GetGameOverlay()
+                    ->TextDrawNotification(6.0f, true, "Save states not enabled. Check Cheats Menu.");
+                return;
+            }
+            const unsigned int slot = OTRGlobals::Instance->gSaveStateMgr->GetCurrentSlot();
+            OTRGlobals::Instance->gSaveStateMgr->ExportState(slot);
+            break;
+        }
+        case KbScancode::LUS_KB_F12: {
+            // ship-gz: import the current slot from disk; apply with F7 afterwards.
+            if (CVarGetInteger(CVAR_CHEAT("SaveStatesEnabled"), 0) == 0) {
+                std::dynamic_pointer_cast<Fast::Fast3dGui>(Ship::Context::GetRawInstance()->GetWindow()->GetGui())
+                    ->GetGameOverlay()
+                    ->TextDrawNotification(6.0f, true, "Save states not enabled. Check Cheats Menu.");
+                return;
+            }
+            const unsigned int slot = OTRGlobals::Instance->gSaveStateMgr->GetCurrentSlot();
+            OTRGlobals::Instance->gSaveStateMgr->ImportState(slot);
             break;
         }
 #if defined(_WIN32) || defined(__APPLE__)

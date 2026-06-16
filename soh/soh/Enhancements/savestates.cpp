@@ -1,5 +1,9 @@
 #include "savestates.h"
 
+#include <fstream>
+#include <filesystem>
+#include <vector>
+
 #include <soh/GameVersions.h>
 
 #include <spdlog/spdlog.h>
@@ -37,6 +41,8 @@ typedef struct {
 typedef struct SaveStateInfo {
     unsigned char sysHeapCopy[SYSTEM_HEAP_SIZE];
     unsigned char audioHeapCopy[AUDIO_HEAP_SIZE];
+
+    int16_t sceneNum; // scene the state was saved in (for cross-session reload-then-restore)
 
     SaveContext saveContextCopy;
     GameInfo gameInfoCopy;
@@ -337,8 +343,16 @@ class SaveState {
     std::shared_ptr<SaveStateMgr> saveStateMgr;
     std::shared_ptr<SaveStateInfo> info;
 
+    // Set when this state was imported from disk (a different session). The resource
+    // arena is restored to a deterministic layout at boot by the arena cache, so the
+    // memory restore is identical to a same-session load; the only difference is that
+    // a cross-session load re-kicks the scene BGM (see Load).
+    bool fromDisk = false;
+
     void Save(void);
-    void Load(void);
+    // crossSession=true (a disk-imported state) re-kicks the scene BGM after the restore;
+    // it does not otherwise change the load. Same-session loads keep seamless audio.
+    void Load(bool crossSession = false);
     void BackupSeqScriptState(void);
     void LoadSeqScriptState(void);
     void BackupCameraData(void);
@@ -791,10 +805,10 @@ void SaveState::LoadMiscCodeData(void) {
     sOcarinaSongCnt = info->sOcarinaSongCnt_copy;
     sOcarinaAvailSongs = info->sOcarinaAvailSongs_copy;
     sStaffPlayingPos = info->sStaffPlayingPos_copy;
-    memcpy(info->sLearnSongPos_copy, info->sLearnSongPos_copy, sizeof(sLearnSongPos));
-    memcpy(info->D_8016BA50_copy, info->D_8016BA50_copy, sizeof(D_8016BA50));
-    memcpy(info->D_8016BA70_copy, info->D_8016BA70_copy, sizeof(D_8016BA70));
-    memcpy(info->sLearnSongExpectedNote_copy, info->sLearnSongExpectedNote_copy, sizeof(sLearnSongExpectedNote));
+    memcpy(sLearnSongPos, info->sLearnSongPos_copy, sizeof(sLearnSongPos));
+    memcpy(D_8016BA50, info->D_8016BA50_copy, sizeof(D_8016BA50));
+    memcpy(D_8016BA70, info->D_8016BA70_copy, sizeof(D_8016BA70));
+    memcpy(sLearnSongExpectedNote, info->sLearnSongExpectedNote_copy, sizeof(sLearnSongExpectedNote));
     memcpy(&D_8016BAA0, &info->D_8016BAA0_copy, sizeof(D_8016BAA0));
     sAudioHasMalonBgm = info->sAudioHasMalonBgm_copy;
     sAudioMalonBgmDist = info->sAudioMalonBgmDist_copy;
@@ -811,6 +825,20 @@ void SaveState::LoadMiscCodeData(void) {
     sHasSunsSong = info->sHasSunsSong_copy;
     sMessageHasSetSfx = info->sMessageHasSetSfx_copy;
     sOcarinaSongBitFlags = info->sOcarinaSongBitFlags_copy;
+}
+
+// Anchors a state file to the exact binary that wrote it. With ASLR disabled the
+// address of this function is constant across launches of the same build but
+// differs between builds; XOR-mixing sizeof(SaveStateInfo) also catches struct
+// layout changes that keep code addresses stable. A file whose buildKey differs
+// is rejected, because its embedded raw pointers would be invalid here.
+static uint64_t GzComputeBuildKey(void) {
+    uintptr_t anchor = (uintptr_t)&GzComputeBuildKey;
+    return (uint64_t)anchor ^ ((uint64_t)sizeof(SaveStateInfo) * 0x9E3779B97F4A7C15ULL);
+}
+
+static std::filesystem::path GzStateFilePath(unsigned int slot) {
+    return std::filesystem::path("savestate_" + std::to_string(slot) + ".gzs");
 }
 
 extern "C" void ProcessSaveStateRequests(void) {
@@ -843,19 +871,121 @@ void SaveStateMgr::ProcessSaveStateRequests(void) {
                 break;
             case RequestType::LOAD:
                 if (this->states.contains(request.slot)) {
-                    this->states[request.slot]->Load();
+                    const std::shared_ptr<SaveState>& state = this->states[request.slot];
+                    // A disk-imported (cross-session) state only has valid resource
+                    // pointers if the arena was rebuilt to its deterministic layout this
+                    // boot, which requires the arena cache. Without it, applying the state
+                    // would point actors at the wrong resource memory -> corruption.
+                    if (state->fromDisk && !CVarGetInteger("gGzArenaCache", 0)) {
+                        SPDLOG_ERROR("Refusing cross-session load (slot {}): gGzArenaCache is off", request.slot);
+                        Ship::Context::GetRawInstance()->GetWindow()->GetGui()->GetGameOverlay()->TextDrawNotification(
+                            1.0f, true, "enable arena cache to load imported state");
+                        break;
+                    }
+                    state->Load(/*crossSession=*/state->fromDisk);
                     Ship::Context::GetRawInstance()->GetWindow()->GetGui()->GetGameOverlay()->TextDrawNotification(
                         1.0f, true, "loaded state %u", request.slot);
                 } else {
                     SPDLOG_ERROR("Invalid SaveState slot: {}", request.slot);
                 }
                 break;
+            case RequestType::EXPORT: {
+                auto overlay =
+                    Ship::Context::GetRawInstance()->GetWindow()->GetGui()->GetGameOverlay();
+                if (!this->states.contains(request.slot)) {
+                    SPDLOG_ERROR("Cannot export empty SaveState slot: {}", request.slot);
+                    overlay->TextDrawNotification(1.0f, true, "slot %u empty, nothing to export", request.slot);
+                    break;
+                }
+                const std::shared_ptr<SaveState>& st = this->states[request.slot];
+                const SaveStateInfo* info = st->info.get();
+                SaveStateHeader header{};
+                header.stateMagic = GZ_SAVESTATE_MAGIC;
+                header.stateVersion = GZ_SAVESTATE_VERSION;
+                header.buildKey = GzComputeBuildKey();
+                header.infoSize = sizeof(SaveStateInfo);
+
+                std::ofstream out(GzStateFilePath(request.slot), std::ios::binary | std::ios::trunc);
+                if (!out) {
+                    SPDLOG_ERROR("Failed to open state file for export, slot {}", request.slot);
+                    overlay->TextDrawNotification(1.0f, true, "export failed (slot %u)", request.slot);
+                    break;
+                }
+                // No arena snapshot: the arena cache reconstructs resource memory
+                // identically at boot, so the state file only needs the SaveStateInfo.
+                out.write(reinterpret_cast<const char*>(&header), sizeof(header));
+                out.write(reinterpret_cast<const char*>(info), sizeof(SaveStateInfo));
+                out.close();
+                SPDLOG_INFO("[SOH] Exported state slot {} to disk", request.slot);
+                overlay->TextDrawNotification(1.0f, true, "exported state %u", request.slot);
+                break;
+            }
+            case RequestType::IMPORT: {
+                auto overlay =
+                    Ship::Context::GetRawInstance()->GetWindow()->GetGui()->GetGameOverlay();
+                std::ifstream in(GzStateFilePath(request.slot), std::ios::binary);
+                if (!in) {
+                    SPDLOG_ERROR("No state file to import for slot {}", request.slot);
+                    overlay->TextDrawNotification(1.0f, true, "no file for slot %u", request.slot);
+                    break;
+                }
+                SaveStateHeader header{};
+                in.read(reinterpret_cast<char*>(&header), sizeof(header));
+                if (!in || header.stateMagic != GZ_SAVESTATE_MAGIC ||
+                    header.stateVersion != GZ_SAVESTATE_VERSION || header.infoSize != sizeof(SaveStateInfo)) {
+                    SPDLOG_ERROR("Bad/incompatible state file for slot {}", request.slot);
+                    overlay->TextDrawNotification(1.0f, true, "slot %u file unreadable", request.slot);
+                    break;
+                }
+                if (header.buildKey != GzComputeBuildKey()) {
+                    SPDLOG_ERROR("State file build mismatch for slot {} (file {:#x} != build {:#x})", request.slot,
+                                 header.buildKey, GzComputeBuildKey());
+                    overlay->TextDrawNotification(1.0f, true, "slot %u from a different build", request.slot);
+                    break;
+                }
+                if (!this->states.contains(request.slot)) {
+                    this->states[request.slot] =
+                        std::make_shared<SaveState>(OTRGlobals::Instance->gSaveStateMgr, request.slot);
+                }
+                const std::shared_ptr<SaveState>& st = this->states[request.slot];
+                in.read(reinterpret_cast<char*>(st->info.get()), sizeof(SaveStateInfo));
+                if (!in) {
+                    SPDLOG_ERROR("Truncated state file for slot {}", request.slot);
+                    overlay->TextDrawNotification(1.0f, true, "slot %u file truncated", request.slot);
+                    this->states.erase(request.slot);
+                    break;
+                }
+                st->fromDisk = true;
+                SPDLOG_INFO("[SOH] Imported state slot {} from disk", request.slot);
+                overlay->TextDrawNotification(1.0f, true, "imported state %u (press load)", request.slot);
+                break;
+            }
                 [[unlikely]] default
                     : SPDLOG_ERROR("Invalid SaveState request type: Unknown ({})", static_cast<int>(request.type));
                 break;
         }
         this->requests.pop();
     }
+}
+
+SaveStateReturn SaveStateMgr::ExportState(unsigned int slot) {
+    if (!states.contains(slot)) {
+        Ship::Context::GetRawInstance()->GetWindow()->GetGui()->GetGameOverlay()->TextDrawNotification(
+            1.0f, true, "slot %u empty, nothing to export", slot);
+        return SaveStateReturn::FAIL_STATE_EMPTY;
+    }
+    requests.push({ slot, RequestType::EXPORT });
+    return SaveStateReturn::SUCCESS;
+}
+
+SaveStateReturn SaveStateMgr::ImportState(unsigned int slot) {
+    if (!std::filesystem::exists(GzStateFilePath(slot))) {
+        Ship::Context::GetRawInstance()->GetWindow()->GetGui()->GetGameOverlay()->TextDrawNotification(
+            1.0f, true, "no file for slot %u", slot);
+        return SaveStateReturn::FAIL_BAD_FILE;
+    }
+    requests.push({ slot, RequestType::IMPORT });
+    return SaveStateReturn::SUCCESS;
 }
 
 SaveStateReturn SaveStateMgr::AddRequest(const SaveStateRequest request) {
@@ -886,8 +1016,13 @@ SaveStateReturn SaveStateMgr::AddRequest(const SaveStateRequest request) {
     }
 }
 
+// ship-gz: cross-session resource validity is handled by the compiled arena cache
+// (see GzArenaCache), which restores the fixed-base resource arena to a byte-identical
+// layout at boot -- so saved pointers into resource memory are valid without rebasing.
+
 void SaveState::Save(void) {
     std::unique_lock<std::mutex> Lock(audio.mutex);
+    fromDisk = false; // a fresh in-session snapshot; its pointers are valid as-is
     memcpy(&info->sysHeapCopy, gSystemHeap, SYSTEM_HEAP_SIZE /* sizeof(gSystemHeap) */);
     memcpy(&info->audioHeapCopy, gAudioHeap, AUDIO_HEAP_SIZE /* sizeof(gAudioContext) */);
 
@@ -919,13 +1054,25 @@ void SaveState::Save(void) {
     SaveOnePointDemoData();
     SaveOverlayStaticData();
     SaveMiscCodeData();
+    info->sceneNum = (gPlayState != nullptr) ? gPlayState->sceneNum : -1;
+
+    // NOTE: the resource arena is no longer snapshotted per-state. The compiled arena
+    // cache (GzArenaCache) makes the arena layout byte-identical every boot, so a saved
+    // state's pointers into resource memory are valid in any session without restoring
+    // the arena. Cross-session load is therefore the same as same-session (see Load).
 }
 
-void SaveState::Load(void) {
+void SaveState::Load(bool crossSession) {
     std::unique_lock<std::mutex> Lock(audio.mutex);
+
+    // Cross-session (disk-imported) and same-session loads are now identical for the
+    // memory restore. The compiled arena cache (GzArenaCache) loads the resource arena
+    // to a byte-identical layout at every boot, so the saved actor pointers into resource
+    // memory are already valid in this session -- no arena flush/restore/rebase needed.
+    // The one cross-session difference is an audio BGM re-kick at the end (see below).
+
     memcpy(gSystemHeap, &info->sysHeapCopy, SYSTEM_HEAP_SIZE);
     memcpy(gAudioHeap, &info->audioHeapCopy, AUDIO_HEAP_SIZE);
-
     memcpy(&gAudioContext, &info->audioContextCopy, sizeof(AudioContext));
     memcpy(gActiveSeqs, &info->gActiveSeqsCopy, sizeof(info->gActiveSeqsCopy));
     LoadSeqScriptState();
@@ -945,11 +1092,27 @@ void SaveState::Load(void) {
     memcpy(gAudioSfxSwapSource, &info->gAudioSfxSwapSource_copy, sizeof(info->gAudioSfxSwapSource_copy));
     memcpy(gAudioSfxSwapTarget, &info->gAudioSfxSwapTarget_copy, sizeof(info->gAudioSfxSwapTarget_copy));
     memcpy(gAudioSfxSwapMode, &info->gAudioSfxSwapMode_copy, sizeof(info->gAudioSfxSwapMode_copy));
+    D_801755D0 = info->D_801755D0_copy;
 
     // Various static data
-    D_801755D0 = info->D_801755D0_copy;
     LoadCameraData();
     LoadOnePointDemoData();
     LoadOverlayStaticData();
     LoadMiscCodeData();
+
+    // Cross-session: re-kick the scene BGM. Restoring the audio heap + context verbatim
+    // brings back a mid-playback sequence-player state that does not reliably resume in a
+    // fresh process (intermittently silent), even though the audio system itself works
+    // (a scene change plays its BGM fine). So instead of trusting the restored player
+    // state, restart the current BGM sequence from scratch -- the same path a scene
+    // change uses. Same-session loads keep the seamless restored playback (no re-kick).
+    if (crossSession) {
+        u16 bgmSeqId = gActiveSeqs[SEQ_PLAYER_BGM_MAIN].seqId;
+        if (bgmSeqId != NA_BGM_DISABLED) {
+            // Clear the active id so the queued start command is not treated as a no-op
+            // ("already playing this seq"), forcing an actual restart.
+            gActiveSeqs[SEQ_PLAYER_BGM_MAIN].seqId = NA_BGM_DISABLED;
+            Audio_QueueSeqCmd(((u32)SEQ_PLAYER_BGM_MAIN << 24) | bgmSeqId);
+        }
+    }
 }

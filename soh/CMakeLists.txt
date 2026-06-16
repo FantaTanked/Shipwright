@@ -460,7 +460,12 @@ if(MSVC)
             >
             /MANIFEST:NO;
             /DEBUG;
-            /SUBSYSTEM:WINDOWS
+            /SUBSYSTEM:WINDOWS;
+            # ship-gz: disable ASLR so code (and thus the function pointers baked
+            # into every saved actor) loads at a fixed address across launches.
+            # Required for cross-session savestates; makes states build-specific,
+            # which the build-hash gate in savestates.cpp enforces.
+            /DYNAMICBASE:NO
         )
     elseif("${CMAKE_VS_PLATFORM_NAME}" STREQUAL "Win32")
         target_link_options(${PROJECT_NAME} PRIVATE

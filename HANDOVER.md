@@ -1,113 +1,183 @@
-# Savestates — Handover
+# Savestates — Handover (cross-session / gResArena work)
 
-_Branch: `develop-gz` • Last updated: 2026-06-15_
+_Branch: `develop-gz` • Last updated: 2026-06-16_
 
-Context for picking this work up cold. Covers the shipped loadzone fix and the
-plan for on-disk savestate export/import.
-
----
-
-## 1. Shipped: loadzone / transition-actor fix
-
-**Commit:** `fix(savestates): respawn transition actors after a savestate load` (latest on `develop-gz`).
-
-**Symptom:** After loading an F-key savestate and re-entering a scene, crossing a
-loading zone / door / crawlspace did nothing — the room transition silently never
-fired. Same-scene loads worked; only scene re-entry after a load broke.
-
-**Root cause:** Transition actors (doors, the `En_Holl` loadzone/crawlspace planes)
-mark themselves "already spawned" by **negating their `id` in place** in the scene's
-transition-actor list; the actor's `Destroy` un-negates it on scene exit. On N64 the
-list was re-DMA'd from ROM each scene load, so it always started positive. SoH points
-`transiActorCtx.list` at a **cached resource that is never reloaded in-session**, and a
-**savestate load replaces the heap wholesale without running any actor's `Destroy`** —
-so the id stays negative. The next visit's spawn loop (`if (id >= 0)`) skips the entry
-and the transition actor never spawns.
-
-**Fix:** In `Scene_CommandTransitionActorList` (`soh/soh/z_scene_otr.cpp`), reset every
-entry id to positive when the list is established on scene load — restoring the N64
-"fresh list" invariant. ~15 lines, one file. General (covers all transition actors).
-
-**Verification:** Confirmed in-game on the Kokiri Forest maze crawlspace. Found via a
-`[ship-gz][trans]` probe showing `id=-35 willSpawn=0` on the *second* scene load. All
-diagnostic probes have been removed; only the fix remains.
+Pick-up-cold context for the cross-session savestate effort. The in-memory
+(same-session) savestate feature works; this round added on-disk export/import that
+must survive **closing and reopening soh.exe**. That goal led to a fixed-base
+**resource arena** (`gResArena`). **Current status: cross-session save/reload still
+crashes in some cases — not yet shippable. Same-session F5/F7 should still work.**
 
 ---
 
-## 2. Base-version status
+## 1. The goal
 
-The in-memory savestate feature is considered good enough to ship as a base version.
-Remaining known gaps and why they don't block a base release:
+Let a player press F5 (save) / F11 (export to disk), **fully close soh.exe**,
+relaunch, F12 (import) / F7 (load), and be back exactly where they saved — same
+build only. No compatibility with real gz/GameCube states.
 
-- **Spot-check the fix generalizes (recommended, ~5 min):** verified only on the maze
-  crawlspace. Try a normal door, a blue warp, and a load inside a dungeon. The fix is
-  general so this is insurance, not an expected failure.
-- **`z_player.c` interaction statics uncaptured** (`sTouchedWallFlags`, `sFloorType`,
-  `sConveyorSpeed`, …): live outside the snapshotted heap. Recompute each frame from
-  collision/input, so stale for ~1 frame then self-correct. Not the loadzone bug (that
-  hypothesis was investigated and reverted). Effectively invisible.
-- **Actors don't get `Destroy` on load:** we fixed the transition-actor consequence.
-  Most actor `Destroy`s only free heap memory (moot — the heap is overwritten anyway).
-  The transition-actor id was special because it mutated *cached resource memory outside
-  the heap*. Other actors doing that in `Destroy` are rare; could resurface as an
-  isolated oddity, not a base-version blocker.
-- **No idempotency/determinism measurement:** gz's frame-perfect guarantee matters only
-  for TAS-grade use. For "save a state, retry a fight/room," visually-correct +
-  progressable is the bar, and we're there.
+Keys: **F5** save (in-memory), **F7** load, **F6** cycle slot, **F11** export slot to
+`savestate_<N>.gzs` (next to exe), **F12** import slot from disk. After F12, F7 applies.
 
 ---
 
-## 3. Next: on-disk export / import (planned, not started)
+## 2. Why this is hard (the core finding)
 
-**Goal:** Let players save states to disk and reload them in a later session of the
-**same build**, so they don't have to replay the game to recreate states. **No** cross
-compatibility with real gz / GameCube states (different platform & RAM layout — not
-feasible and not wanted). SoH's own state files only.
+A savestate is a raw memory snapshot full of baked-in pointers. Three classes break
+across a process restart, fixed in order of discovery:
 
-### Why it's bounded (not a research project)
-OoT uses **segmented addressing** — actors reference object/scene data via segment
-numbers resolved through `gSegments` each frame, not raw pointers. So the set of
-*absolute* resource pointers that break across a process restart is small and
-**enumerable**, and it is already enumerated by the `GzRebaseSet` in git commit
-`4a87ee75f` (`feat(savestates): gz-style reload-then-restore for cross-scene loads`).
-That reverted engine is the foundation — cross-session is the same problem as the
-cross-scene case it handled (resources live at new addresses).
+1. **Internal heap pointers** → fixed by pinning `gSystemHeap`/`gAudioHeap` at fixed
+   virtual addresses (`heaps.c`).
+2. **Function pointers** baked into actors → fixed by disabling ASLR
+   (`/DYNAMICBASE:NO`, `soh/CMakeLists.txt`) + a build-hash gate on the state file.
+3. **Resource pointers** — the wall. Actors hold **direct pointers into
+   `ResourceManager` (C++ heap) memory** (skeletons, display lists, vertices,
+   collision, scene data). `DmaMgr_SendRequest1` is a **no-op in SoH**
+   (`soh/src/boot/z_std_dma.c:439`) — objects are NOT copied into the game arena;
+   the arena object/room buffers are vestigial. So `skelAnime.skeleton` etc. point
+   straight into ResourceManager allocations that move (and are freed → `0xDDDD`)
+   across a restart. These are pervasive (every actor with a skeleton/anim), not an
+   enumerable set, so PlayState-field "rebasing" can never fix cross-session.
 
-### What export/import needs
-1. **Serialize/deserialize** the `SaveStateInfo` blob to a file + header (magic, build
-   hash, scene id). Trivial I/O. The state today is a single
-   `std::make_shared<SaveStateInfo>()` (~7.5 MB: two heap copies + scalar fields).
-2. **Pin the heaps** — allocate `gSystemHeap`/`gAudioHeap` at **fixed virtual
-   addresses** (`VirtualAlloc` / `mmap` fixed base) instead of `_aligned_malloc`
-   (`soh/src/buffers/heaps.c`). Keeps every *internal* heap pointer valid across runs.
-3. **Disable ASLR** on the exe (`/DYNAMICBASE:NO`, MSVC) so the code base is fixed and
-   the function pointers baked into every saved actor (`init/destroy/update/draw`,
-   `actionFunc`, plus an explicit `void(*)()` field) survive a restart. This makes
-   states **build-specific** — add a build-hash gate in the file header so a state from
-   a different build is rejected cleanly, not crash-loaded. **(Decision pending: OK to
-   disable ASLR? It's the one real gate on the whole approach.)**
-4. **Reload-then-restore + rebase on import** — revive `4a87ee75f`: load the saved
-   scene fresh (repopulates ResourceManager + `gSegments` + PlayState resource fields at
-   this session's addresses), overlay the saved heap, then rebase the `GzRebaseSet`
-   pointers + `gSegments`. The cosmetic 1-frame "snap" was already solved via the
-   deferred-restore work in that same history.
-
-### The one real risk
-The rebase set may miss an absolute resource pointer for some specific scene/actor —
-same whack-a-mole flavor as the loadzone bug. Segmented addressing keeps that set small,
-but not provably zero. Expect to test across scene types and fix stragglers iteratively.
-
-### Suggested build order
-Foundation first (high confidence): fixed-address heaps + ASLR off + serialize/import
-scaffolding + build-hash header → confirm a state survives a restart **in the same
-scene**. Then layer the reload-then-restore rebase for **cross-scene** states.
+**Key memory-layout fact:** `SystemHeap_Init((void*)gSystemHeap, ...)` (`main.c:97`)
+makes the system arena == `gSystemHeap`. PlayState, the game arena, room buffers and
+object banks all live INSIDE the pinned heap. So a plain heap overwrite already
+restores actors + their heap-internal pointers correctly. Only **ResourceManager
+memory** is the problem.
 
 ---
 
-## 4. Reference
-- Reverted reload-then-restore engine + `GzRebaseSet`: git commit `4a87ee75f` (no longer
-  on the branch; recoverable from reflog / git history).
-- The 9 prior exploratory commits (spikes, design/handover docs) were squashed out of
-  `develop-gz`; old tip was `40ae2fc77` if anything there is needed.
-- Active savestate code: `soh/soh/Enhancements/savestates.cpp` / `.h` /
-  `savestates_extern.inc`; scene-command path in `soh/soh/z_scene_otr.cpp`.
+## 3. The chosen solution: `gResArena` (fixed-base resource arena)
+
+Route **all resource payload memory** to a bump arena at a **fixed virtual base**, so
+it can be snapshot/restored like the heaps. Then a cross-session load restores the
+arena verbatim and every actor pointer into resource memory is valid again — **no
+reload, no rebase, no audio-skip, no snap.**
+
+**Files (all inside the `libultraship` submodule unless noted):**
+
+- `libultraship/include/ship/resource/GzResArena.h` — arena API + `GzResArena_RouteScope`.
+- `libultraship/src/ship/resource/GzResArena.cpp` — the arena. Fixed base
+  `0x0000030000000000`, 4 GiB reserve, commit-on-demand bump allocator (no per-object
+  free — deliberate, see below). Also contains a **global `operator new`/`delete`
+  replacement**: while a thread-local route depth is >0, `new` serves from the arena;
+  `delete` is a no-op for arena pointers (range check `GzResArena_Owns`), else
+  `_aligned_free`. Non-arena `new` → `_aligned_malloc`.
+- `libultraship/src/ship/resource/ResourceLoader.cpp:~227` — wraps
+  `factory->ReadResource(...)` in a `Ship::GzResArena_RouteScope`. **This is the one
+  hook**: the entire parsed resource graph (the `Resource` object itself, its payload
+  vectors, nested data) lands in the arena. (Chosen over per-type STL allocators
+  because `Skeleton::GetPointer()` returns `&skeletonData`, a member of the Resource
+  *object* created via `make_shared`, which typed allocators would miss.)
+- `libultraship/include/ship/resource/ResourceManager.h` +
+  `libultraship/src/ship/resource/ResourceManager.cpp` —
+  `GzClearCacheForStateLoad()`: waits for the thread pool, locks `mMutex`, clears
+  `mResourceCache`. Releases every cached `shared_ptr<IResource>` before the arena is
+  overwritten.
+- `soh/soh/Enhancements/savestates.cpp` / `.h` — save/load/export/import.
+  `SaveState::resArenaCopy` (`std::vector<uint8_t>`) holds the arena snapshot.
+
+**Why bump / no-free:** it makes the flush+restore safe. A free-list would have live
+metadata in the arena that a verbatim restore would corrupt. Bump never frees, so
+flushing the ResourceManager and overwriting the arena can't double-free. Tradeoff:
+each state load orphans pre-restore resources (memory growth) — acceptable for a
+practice tool; falls back to the normal heap if the 4 GiB reserve fills.
+
+**Cross-session load sequence** (`SaveState::Load(crossSession=true)`):
+1. `GzClearCacheForStateLoad()` — release all live Resource objects.
+2. `GzResArena_Reset()` → `memcpy(base, resArenaCopy, size)` → `GzResArena_SetUsed(size)`.
+3. Full heap + audio + static restore (same as same-session; no rebase, no audio-skip).
+
+Same-session load (`fromDisk == false`): plain heap overwrite, no arena ops (resources
+are still resident — bump never freed them).
+
+---
+
+## 4. Current status / what works
+
+- **Builds clean.** Latest `x64/Debug/soh.exe` from 2026-06-16 ~11:07.
+- **Normal play + scene changes work** with all resources routed through the arena
+  (validated). Memory climbs over time (bump never reclaims) — expected.
+- **Cross-session save/reload CRASHES in some cases** (the reason for this handover).
+  Same-session F5/F7 should be intact (it doesn't touch the arena), but re-verify.
+
+---
+
+## 5. Debugging leads for the crashes (start here)
+
+Crash logs: `x64/Debug/logs/Ship of Harkinian.log` — the crash handler prints a
+**symbolicated traceback** + registers + scene. Grep for `Exception: 0xc0000005`,
+take the **last** one. `0xDDDDDDDD` in a register = CRT freed-heap (a released
+ResourceManager allocation). An address `0x3000_xxxx_xxxx` = inside the arena.
+
+Likely suspects, roughly in order:
+
+1. **Resources loaded OUTSIDE `ReadResource`** won't be in the arena, so their
+   pointers are still stale cross-session. Audit paths that build resource data
+   without going through `ResourceLoader::LoadResource` (some audio, some
+   `ResourceMgr_*` helpers, anything `make_shared`-ing a payload directly, textures
+   uploaded to GPU then freed). The crash stack names the system — chase that.
+2. **Flush incompleteness.** `GzClearCacheForStateLoad` only clears `mResourceCache`.
+   If any `shared_ptr<IResource>` is held elsewhere (factory static caches — e.g.
+   `SkeletonPatcher::skeletons`, the renderer, gfx command buffers) it survives the
+   flush, then its Resource object (in the arena) gets overwritten by the restore →
+   corrupted vtable → crash on next use or destruct. Audit long-lived
+   `shared_ptr<IResource>` holders.
+3. **Arena overflow / fallback.** If `GzResArena_GetUsed()` exceeds 4 GiB during a
+   long session before saving, later allocations fall back to the normal heap and are
+   NOT in the snapshot → stale on restore. Check the used size at save time.
+4. **Save-time vs load-time arena mismatch.** `Save()` snapshots `[base, used)`. If
+   anything wrote arena memory between snapshot and the heap snapshot, or if the
+   ordering with the audio mutex is wrong, you can capture an inconsistent image.
+5. **Same-session crash?** If F5/F7 (not disk) now crashes, the regression is in the
+   `Load()` rewrite or the global `operator new`/`delete` replacement (e.g. an
+   allocation that crosses arena/non-arena and is freed by the wrong path). The
+   global new/delete is the riskiest change — verify pointers allocated outside a
+   route scope are never freed as arena and vice-versa.
+
+Suggested next step: reproduce, read the latest crash's traceback, and identify which
+resource/system the faulting pointer belongs to. If it's a resource type not going
+through `ReadResource`, route it (or snapshot it). If it's a surviving `shared_ptr`,
+extend the flush.
+
+---
+
+## 6. Build
+
+VS BuildTools cmake is NOT on PATH:
+```
+"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe" --build build/x64 --target soh --config Debug
+```
+If you add/remove files, reconfigure first: run the same cmake with just `build/x64`
+(CMake GLOBs `resource/*.cpp`). Output: `x64/Debug/soh.exe`. Each rebuild changes the
+build hash, so **old `.gzs` files are rejected** — re-save/re-export after a build.
+
+Confirm ASLR off: `dumpbin /headers x64\Debug\soh.exe` → "DLL characteristics"
+should NOT include the dynamic-base bit (value was `0x8120`).
+
+---
+
+## 7. Changed files summary
+
+- `soh/src/buffers/heaps.c` — pinned `gSystemHeap`/`gAudioHeap` (VirtualAlloc/mmap fixed base).
+- `soh/CMakeLists.txt` — `/DYNAMICBASE:NO` on the 64-bit link.
+- `soh/soh/Enhancements/savestates.cpp` / `.h` — disk export/import, build-hash header,
+  arena snapshot/restore, `Load(crossSession)`. (Also fixed an old `LoadMiscCodeData`
+  self-memcpy bug.) Note: dead `deferred*` members remain in the header (harmless).
+- `soh/soh/OTRGlobals.cpp` — F11/F12 key handlers.
+- `libultraship` (submodule, uncommitted): `GzResArena.{h,cpp}` (new),
+  `ResourceLoader.cpp` (route scope), `ResourceManager.{h,cpp}`
+  (`GzClearCacheForStateLoad`), `fast/.../Vertex.h` (touched then reverted — should be
+  a no-op diff).
+
+**Heads up:** the libultraship changes are in a **submodule** and are uncommitted.
+Commit them inside the submodule (or stash carefully) so they aren't lost.
+
+---
+
+## 8. Reference
+
+- Reverted reload-then-restore engine + `GzRebaseSet` (no longer used; superseded by
+  the arena): git commit `4a87ee75f`.
+- Shipped earlier: transition-actor (loadzone/crawlspace) fix in
+  `soh/soh/z_scene_otr.cpp` — keep.

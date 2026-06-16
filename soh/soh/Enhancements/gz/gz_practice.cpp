@@ -60,20 +60,20 @@ struct GzRootItem {
     bool enabled;
 };
 static const GzRootItem kRootItems[] = {
-    { "return", true },     { "warps", false },    { "scene", false },  { "cheats", false },
-    { "inventory", false }, { "equips", false },   { "file", false },   { "macro", true },
-    { "settings", false },  { "watches", false },  { "debug", false },
+    { "return", true },     { "warps", false },   { "scene", false },  { "cheats", false },
+    { "inventory", false }, { "equips", false },  { "file", false },   { "macro", true },
+    { "watches", false },   { "debug", false },   { "settings", false },
 };
 static const int kRootCount = (int)(sizeof(kRootItems) / sizeof(kRootItems[0]));
 
-// Macro-screen rows (our savestate section), in display order.
+// Macro-screen rows (our savestate section), in display order. "return" first, gz-style.
 enum GzMenuEntry {
+    GZ_MENU_BACK,
     GZ_MENU_SAVE,
     GZ_MENU_LOAD,
     GZ_MENU_EXPORT,
     GZ_MENU_IMPORT,
     GZ_MENU_SLOT,
-    GZ_MENU_BACK,
     GZ_MENU_COUNT,
 };
 
@@ -98,6 +98,11 @@ static std::atomic<int> sImportSel{ 0 };
 static std::mutex sImportMutex;
 static std::vector<GzImportFile> sImportFiles;
 
+// The overlay window. Kept hidden unless the menu is open, so it never participates in
+// the draw loop while closed (an always-shown borderless window left a black artifact
+// when the OS window was moved/resized).
+static std::shared_ptr<Ship::GuiWindow> sOverlay;
+
 static unsigned int GzCurrentSlot() {
     return OTRGlobals::Instance->gSaveStateMgr->GetCurrentSlot();
 }
@@ -109,14 +114,13 @@ static std::string GzSlotFilePath(unsigned int slot) {
         .string();
 }
 
-static void GzSuppressGameInput(Input* input) {
-    input->cur.button = 0;
-    input->press.button = 0;
-    input->rel.button = 0;
-    input->cur.stick_x = 0;
-    input->cur.stick_y = 0;
-    input->rel.stick_x = 0;
-    input->rel.stick_y = 0;
+// While the menu is open only the D-pad is captured for navigation; the rest of the
+// controller still drives the game (gz-style, the game keeps running underneath).
+static void GzSuppressDpad(Input* input) {
+    const uint16_t dpad = BTN_DUP | BTN_DDOWN | BTN_DLEFT | BTN_DRIGHT;
+    input->cur.button &= ~dpad;
+    input->press.button &= ~dpad;
+    input->rel.button &= ~dpad;
 }
 
 // (Re)scan the savestates/ folder for *.gzs and enter the import screen.
@@ -194,13 +198,19 @@ static void GzConfirmMacroSelection() {
     }
 }
 
+// Import-screen rows are: [0] "return", then one row per .gzs file.
 static void GzConfirmImportSelection() {
+    const int sel = sImportSel.load();
+    if (sel == 0) {
+        GzGoToScreen(GZ_SCREEN_MACRO); // "return" row
+        return;
+    }
     std::string path;
     {
         std::lock_guard<std::mutex> lock(sImportMutex);
-        const int sel = sImportSel.load();
-        if (sel >= 0 && sel < (int)sImportFiles.size()) {
-            path = sImportFiles[sel].path;
+        const int idx = sel - 1;
+        if (idx >= 0 && idx < (int)sImportFiles.size()) {
+            path = sImportFiles[idx].path;
         }
     }
     if (!path.empty()) {
@@ -222,8 +232,6 @@ static void GzHandleRootScreen(Input* input) {
 
     if (CHECK_BTN_ALL(pressed, BTN_CDOWN)) {
         GzConfirmRootSelection();
-    } else if (CHECK_BTN_ALL(pressed, BTN_B)) {
-        sMenuOpen.store(false); // B on the root acts as "return"
     }
 }
 
@@ -249,8 +257,6 @@ static void GzHandleMacroScreen(Input* input) {
 
     if (CHECK_BTN_ALL(pressed, BTN_CDOWN)) {
         GzConfirmMacroSelection();
-    } else if (CHECK_BTN_ALL(pressed, BTN_B)) {
-        GzGoToScreen(GZ_SCREEN_ROOT); // B goes back to the root menu
     }
 }
 
@@ -262,23 +268,18 @@ static void GzHandleImportScreen(Input* input) {
         std::lock_guard<std::mutex> lock(sImportMutex);
         count = (int)sImportFiles.size();
     }
+    const int rowCount = count + 1; // leading "return" row
 
-    if (count > 0) {
-        int sel = sImportSel.load();
-        if (CHECK_BTN_ALL(pressed, BTN_DUP)) {
-            sel = (sel + count - 1) % count;
-        } else if (CHECK_BTN_ALL(pressed, BTN_DDOWN)) {
-            sel = (sel + 1) % count;
-        }
-        sImportSel.store(sel);
-        if (CHECK_BTN_ALL(pressed, BTN_CDOWN)) {
-            GzConfirmImportSelection();
-            return;
-        }
+    int sel = sImportSel.load();
+    if (CHECK_BTN_ALL(pressed, BTN_DUP)) {
+        sel = (sel + rowCount - 1) % rowCount;
+    } else if (CHECK_BTN_ALL(pressed, BTN_DDOWN)) {
+        sel = (sel + 1) % rowCount;
     }
+    sImportSel.store(sel);
 
-    if (CHECK_BTN_ALL(pressed, BTN_B)) {
-        GzGoToScreen(GZ_SCREEN_MACRO);
+    if (CHECK_BTN_ALL(pressed, BTN_CDOWN)) {
+        GzConfirmImportSelection();
     }
 }
 
@@ -290,6 +291,16 @@ static void OnGameStateMainStartGzMode() {
         return;
     }
 
+    // Show the overlay only while the menu is open (avoids a stray black window when
+    // closed). One-frame lag on first draw is imperceptible.
+    if (sOverlay != nullptr && sOverlay->IsVisible() != sMenuOpen.load()) {
+        if (sMenuOpen.load()) {
+            sOverlay->Show();
+        } else {
+            sOverlay->Hide();
+        }
+    }
+
     Input* input = &gPlayState->state.input[0];
     const bool rHeld = CHECK_BTN_ALL(input->cur.button, BTN_R);
     const bool cDownPressed = CHECK_BTN_ALL(input->press.button, BTN_CDOWN);
@@ -299,7 +310,7 @@ static void OnGameStateMainStartGzMode() {
         // when it was last closed.
         if (rHeld && cDownPressed) {
             sMenuOpen.store(true);
-            GzSuppressGameInput(input); // don't let the opening combo reach the game
+            GzSuppressDpad(input);
             return;
         }
         // Quick hotkeys while playing.
@@ -322,7 +333,7 @@ static void OnGameStateMainStartGzMode() {
         GzHandleRootScreen(input);
     }
 
-    GzSuppressGameInput(input); // menu owns all input while open
+    GzSuppressDpad(input); // only the D-pad is captured; the game keeps the rest
 }
 
 // Borderless, input-less overlay window; we draw through the foreground draw list so
@@ -350,6 +361,13 @@ class GzMenuOverlay final : public Ship::GuiWindow {
         ImGui::SetWindowPos(vp->Pos);
         ImGui::SetWindowSize(vp->Size);
 
+        // The overlay font is loaded at a fixed 12px, so it shrinks on high-res displays.
+        // Scale both the glyphs (SetWindowFontScale) and our layout coordinates (mScale)
+        // by the viewport height so the menu stays readable at 1080p/1440p/4K. The 1.5
+        // floor keeps it legible in small windows.
+        mScale = std::max(1.5f, vp->Size.y / 540.0f);
+        ImGui::SetWindowFontScale(mScale);
+
         if (sScreen.load() == GZ_SCREEN_IMPORT) {
             DrawImportScreen(overlay);
         } else if (sScreen.load() == GZ_SCREEN_MACRO) {
@@ -357,44 +375,44 @@ class GzMenuOverlay final : public Ship::GuiWindow {
         } else {
             DrawRootScreen(overlay);
         }
+
+        ImGui::SetWindowFontScale(1.0f);
     }
 
   private:
-    // Draws the gz-style list: the overlay's pixel font ("Press Start 2P") with a drop
-    // shadow, a title, a '>' cursor + highlight colour on the selected row, and a footer.
-    // If `enabled` is supplied, disabled rows are dimmed (a greyed-out gz stub).
-    void DrawList(const std::shared_ptr<Ship::GameOverlay>& overlay, const char* title,
-                  const std::vector<std::string>& rows, int sel, const char* footer,
+    float mScale = 1.0f; // resolution-based UI scale, set each frame in DrawElement
+
+    // Draws a gz-style list: the overlay's pixel font ("Press Start 2P") with a drop
+    // shadow, left-aligned near the left edge and vertically about a fifth down, the
+    // selected row tinted gz-blue (no cursor arrow). If `enabled` is supplied, disabled
+    // rows are dimmed (a greyed-out gz stub).
+    void DrawList(const std::shared_ptr<Ship::GameOverlay>& overlay, const std::vector<std::string>& rows, int sel,
                   const std::vector<bool>* enabled = nullptr) {
         const ImVec4 white(1.0f, 1.0f, 1.0f, 1.0f);
-        const ImVec4 yellow(1.0f, 0.85f, 0.0f, 1.0f);
-        const ImVec4 dim(0.45f, 0.45f, 0.45f, 1.0f);
-        const ImVec4 dimSel(0.7f, 0.6f, 0.3f, 1.0f);
-        const ImVec4 grey(0.66f, 0.66f, 0.66f, 1.0f);
+        const ImVec4 blue(0.45f, 0.62f, 1.0f, 1.0f); // gz selection colour
+        const ImVec4 dim(0.5f, 0.5f, 0.5f, 1.0f);
+        const ImVec4 dimSel(0.4f, 0.5f, 0.7f, 1.0f);
 
-        const float lineH = overlay->CalculateTextSize("Ag").y + 4.0f;
-        const float x = 16.0f;
-        float y = 16.0f;
+        // CalculateTextSize returns the unscaled glyph height, so scale our spacing to
+        // match the SetWindowFontScale applied to the text itself. gz uses tight spacing.
+        const float lineH = (overlay->CalculateTextSize("Ag").y + 1.0f) * mScale;
 
-        overlay->TextDraw(x, y, true, yellow, "%s", title);
-        y += lineH * 1.5f;
+        // gz anchors the menu to the left edge, roughly a fifth of the way down.
+        const ImGuiViewport* vp = ImGui::GetMainViewport();
+        const float x = vp->Size.x * 0.045f;
+        float y = vp->Size.y * 0.22f;
 
         for (int i = 0; i < (int)rows.size(); i++) {
             const bool selected = (i == sel);
             const bool rowEnabled = (enabled == nullptr) || (i < (int)enabled->size() && (*enabled)[i]);
             ImVec4 color;
             if (rowEnabled) {
-                color = selected ? yellow : white;
+                color = selected ? blue : white;
             } else {
                 color = selected ? dimSel : dim;
             }
-            overlay->TextDraw(x, y, true, color, "%s%s", selected ? "> " : "  ", rows[i].c_str());
+            overlay->TextDraw(x, y, true, color, "%s", rows[i].c_str());
             y += lineH;
-        }
-
-        if (footer) {
-            y += lineH * 0.5f;
-            overlay->TextDraw(x, y, true, grey, "%s", footer);
         }
     }
 
@@ -405,25 +423,26 @@ class GzMenuOverlay final : public Ship::GuiWindow {
             rows.push_back(kRootItems[i].label);
             enabled.push_back(kRootItems[i].enabled);
         }
-        DrawList(overlay, "-gz-", rows, sMenuSel.load(), "C-Down: select   R+C-Down: close", &enabled);
+        DrawList(overlay, rows, sMenuSel.load(), &enabled);
     }
 
     void DrawMacroScreen(const std::shared_ptr<Ship::GameOverlay>& overlay) {
         const unsigned int slot = GzCurrentSlot();
         std::vector<std::string> rows = {
-            "Save state",
-            "Load state",
-            "Export slot to disk...",
-            "Import slot from disk",
-            "Slot: < " + std::to_string(slot) + " >",
-            "Back",
+            "return",
+            "save state",
+            "load state",
+            "export to disk",
+            "import from disk",
+            "slot < " + std::to_string(slot) + " >",
         };
-        DrawList(overlay, "-macro-", rows, sMenuSel.load(), "C-Down: select   B: back");
+        DrawList(overlay, rows, sMenuSel.load());
     }
 
     void DrawImportScreen(const std::shared_ptr<Ship::GameOverlay>& overlay) {
         std::vector<std::string> rows;
         int sel;
+        rows.push_back("return"); // row 0
         {
             std::lock_guard<std::mutex> lock(sImportMutex);
             for (const auto& f : sImportFiles) {
@@ -431,11 +450,10 @@ class GzMenuOverlay final : public Ship::GuiWindow {
             }
             sel = sImportSel.load();
         }
-        if (rows.empty()) {
-            rows.push_back("(no .gzs files in savestates/)");
-            sel = -1;
+        if (rows.size() == 1) {
+            rows.push_back("(no .gzs files)"); // informational, not selectable
         }
-        DrawList(overlay, "-import savestate-", rows, sel, "C-Down: import   B: back");
+        DrawList(overlay, rows, sel);
     }
 };
 
@@ -448,13 +466,16 @@ static void GzEnsureOverlayRegistered() {
     if (gui == nullptr) {
         return;
     }
+    // Empty visibility CVar: we drive visibility ourselves from the hook and don't want
+    // it persisted across sessions.
     auto overlay = std::make_shared<GzMenuOverlay>(
-        CVAR_WINDOW("GzMenuOverlay"), true, "gz menu overlay", ImVec2(10, 10),
+        "", false, "gz menu overlay", ImVec2(10, 10),
         ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
             ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoSavedSettings |
             ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav);
     gui->AddGuiWindow(overlay);
-    overlay->Show(); // always "shown"; DrawElement no-ops unless the menu is open
+    overlay->Hide(); // shown only while the menu is open (see the hook)
+    sOverlay = overlay;
     registered = true;
 }
 

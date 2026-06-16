@@ -25,6 +25,7 @@
 
 #include <atomic>
 #include <algorithm>
+#include <cstring>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -51,19 +52,34 @@ extern PlayState* gPlayState;
 #define CVAR_GZ_MODE_DEFAULT 0
 #define CVAR_GZ_MODE_VALUE CVarGetInteger(CVAR_GZ_MODE_NAME, CVAR_GZ_MODE_DEFAULT)
 
-// Main-screen rows, in display order.
+// The gz-style top-level menu. Everything is greyed out (a stub) except "return"
+// (closes) and "macro", which opens our savestate section -- mirroring gz, where
+// save/load states live under the macro page.
+struct GzRootItem {
+    const char* label;
+    bool enabled;
+};
+static const GzRootItem kRootItems[] = {
+    { "return", true },     { "warps", false },    { "scene", false },  { "cheats", false },
+    { "inventory", false }, { "equips", false },   { "file", false },   { "macro", true },
+    { "settings", false },  { "watches", false },  { "debug", false },
+};
+static const int kRootCount = (int)(sizeof(kRootItems) / sizeof(kRootItems[0]));
+
+// Macro-screen rows (our savestate section), in display order.
 enum GzMenuEntry {
     GZ_MENU_SAVE,
     GZ_MENU_LOAD,
     GZ_MENU_EXPORT,
     GZ_MENU_IMPORT,
     GZ_MENU_SLOT,
-    GZ_MENU_CLOSE,
+    GZ_MENU_BACK,
     GZ_MENU_COUNT,
 };
 
 enum GzScreen {
-    GZ_SCREEN_MAIN,
+    GZ_SCREEN_ROOT,
+    GZ_SCREEN_MACRO,
     GZ_SCREEN_IMPORT,
 };
 
@@ -76,7 +92,7 @@ struct GzImportFile {
 // atomic; the import file list is guarded by a mutex (it's resized on the game thread
 // while the draw thread iterates it).
 static std::atomic<bool> sMenuOpen{ false };
-static std::atomic<int> sScreen{ GZ_SCREEN_MAIN };
+static std::atomic<int> sScreen{ GZ_SCREEN_ROOT };
 static std::atomic<int> sMenuSel{ 0 };
 static std::atomic<int> sImportSel{ 0 };
 static std::mutex sImportMutex;
@@ -128,7 +144,29 @@ static void GzEnterImportScreen() {
     sScreen.store(GZ_SCREEN_IMPORT);
 }
 
-static void GzConfirmMainSelection() {
+// Switch screens, resetting the (shared) row cursor.
+static void GzGoToScreen(GzScreen screen) {
+    sScreen.store(screen);
+    sMenuSel.store(0);
+}
+
+static void GzConfirmRootSelection() {
+    const int sel = sMenuSel.load();
+    if (sel < 0 || sel >= kRootCount) {
+        return;
+    }
+    const GzRootItem& item = kRootItems[sel];
+    if (!item.enabled) {
+        return; // greyed-out stub
+    }
+    if (strcmp(item.label, "macro") == 0) {
+        GzGoToScreen(GZ_SCREEN_MACRO);
+    } else if (strcmp(item.label, "return") == 0) {
+        sMenuOpen.store(false);
+    }
+}
+
+static void GzConfirmMacroSelection() {
     const auto mgr = OTRGlobals::Instance->gSaveStateMgr;
     const unsigned int slot = GzCurrentSlot();
     switch (sMenuSel.load()) {
@@ -148,8 +186,8 @@ static void GzConfirmMainSelection() {
         case GZ_MENU_SLOT:
             mgr->SetCurrentSlot((slot + 1) % 6);
             break;
-        case GZ_MENU_CLOSE:
-            sMenuOpen.store(false);
+        case GZ_MENU_BACK:
+            GzGoToScreen(GZ_SCREEN_ROOT);
             break;
         default:
             break;
@@ -167,11 +205,29 @@ static void GzConfirmImportSelection() {
     }
     if (!path.empty()) {
         OTRGlobals::Instance->gSaveStateMgr->ImportState(GzCurrentSlot(), path);
-        sScreen.store(GZ_SCREEN_MAIN); // back to the main screen; apply with Load
+        GzGoToScreen(GZ_SCREEN_MACRO); // back to the macro screen; apply with Load
     }
 }
 
-static void GzHandleMainScreen(Input* input) {
+static void GzHandleRootScreen(Input* input) {
+    const uint16_t pressed = input->press.button;
+    int sel = sMenuSel.load();
+
+    if (CHECK_BTN_ALL(pressed, BTN_DUP)) {
+        sel = (sel + kRootCount - 1) % kRootCount;
+    } else if (CHECK_BTN_ALL(pressed, BTN_DDOWN)) {
+        sel = (sel + 1) % kRootCount;
+    }
+    sMenuSel.store(sel);
+
+    if (CHECK_BTN_ALL(pressed, BTN_CDOWN)) {
+        GzConfirmRootSelection();
+    } else if (CHECK_BTN_ALL(pressed, BTN_B)) {
+        sMenuOpen.store(false); // B on the root acts as "return"
+    }
+}
+
+static void GzHandleMacroScreen(Input* input) {
     const uint16_t pressed = input->press.button;
     int sel = sMenuSel.load();
 
@@ -192,7 +248,9 @@ static void GzHandleMainScreen(Input* input) {
     }
 
     if (CHECK_BTN_ALL(pressed, BTN_CDOWN)) {
-        GzConfirmMainSelection();
+        GzConfirmMacroSelection();
+    } else if (CHECK_BTN_ALL(pressed, BTN_B)) {
+        GzGoToScreen(GZ_SCREEN_ROOT); // B goes back to the root menu
     }
 }
 
@@ -220,7 +278,7 @@ static void GzHandleImportScreen(Input* input) {
     }
 
     if (CHECK_BTN_ALL(pressed, BTN_B)) {
-        sScreen.store(GZ_SCREEN_MAIN);
+        GzGoToScreen(GZ_SCREEN_MACRO);
     }
 }
 
@@ -237,10 +295,10 @@ static void OnGameStateMainStartGzMode() {
     const bool cDownPressed = CHECK_BTN_ALL(input->press.button, BTN_CDOWN);
 
     if (!sMenuOpen.load()) {
-        // R + C-Down opens the menu.
+        // R + C-Down opens the menu, returning to whatever screen/selection was active
+        // when it was last closed.
         if (rHeld && cDownPressed) {
             sMenuOpen.store(true);
-            sScreen.store(GZ_SCREEN_MAIN);
             GzSuppressGameInput(input); // don't let the opening combo reach the game
             return;
         }
@@ -258,8 +316,10 @@ static void OnGameStateMainStartGzMode() {
         sMenuOpen.store(false);
     } else if (sScreen.load() == GZ_SCREEN_IMPORT) {
         GzHandleImportScreen(input);
+    } else if (sScreen.load() == GZ_SCREEN_MACRO) {
+        GzHandleMacroScreen(input);
     } else {
-        GzHandleMainScreen(input);
+        GzHandleRootScreen(input);
     }
 
     GzSuppressGameInput(input); // menu owns all input while open
@@ -292,18 +352,24 @@ class GzMenuOverlay final : public Ship::GuiWindow {
 
         if (sScreen.load() == GZ_SCREEN_IMPORT) {
             DrawImportScreen(overlay);
+        } else if (sScreen.load() == GZ_SCREEN_MACRO) {
+            DrawMacroScreen(overlay);
         } else {
-            DrawMainScreen(overlay);
+            DrawRootScreen(overlay);
         }
     }
 
   private:
     // Draws the gz-style list: the overlay's pixel font ("Press Start 2P") with a drop
     // shadow, a title, a '>' cursor + highlight colour on the selected row, and a footer.
+    // If `enabled` is supplied, disabled rows are dimmed (a greyed-out gz stub).
     void DrawList(const std::shared_ptr<Ship::GameOverlay>& overlay, const char* title,
-                  const std::vector<std::string>& rows, int sel, const char* footer) {
+                  const std::vector<std::string>& rows, int sel, const char* footer,
+                  const std::vector<bool>* enabled = nullptr) {
         const ImVec4 white(1.0f, 1.0f, 1.0f, 1.0f);
         const ImVec4 yellow(1.0f, 0.85f, 0.0f, 1.0f);
+        const ImVec4 dim(0.45f, 0.45f, 0.45f, 1.0f);
+        const ImVec4 dimSel(0.7f, 0.6f, 0.3f, 1.0f);
         const ImVec4 grey(0.66f, 0.66f, 0.66f, 1.0f);
 
         const float lineH = overlay->CalculateTextSize("Ag").y + 4.0f;
@@ -315,8 +381,14 @@ class GzMenuOverlay final : public Ship::GuiWindow {
 
         for (int i = 0; i < (int)rows.size(); i++) {
             const bool selected = (i == sel);
-            overlay->TextDraw(x, y, true, selected ? yellow : white, "%s%s", selected ? "> " : "  ",
-                              rows[i].c_str());
+            const bool rowEnabled = (enabled == nullptr) || (i < (int)enabled->size() && (*enabled)[i]);
+            ImVec4 color;
+            if (rowEnabled) {
+                color = selected ? yellow : white;
+            } else {
+                color = selected ? dimSel : dim;
+            }
+            overlay->TextDraw(x, y, true, color, "%s%s", selected ? "> " : "  ", rows[i].c_str());
             y += lineH;
         }
 
@@ -326,7 +398,17 @@ class GzMenuOverlay final : public Ship::GuiWindow {
         }
     }
 
-    void DrawMainScreen(const std::shared_ptr<Ship::GameOverlay>& overlay) {
+    void DrawRootScreen(const std::shared_ptr<Ship::GameOverlay>& overlay) {
+        std::vector<std::string> rows;
+        std::vector<bool> enabled;
+        for (int i = 0; i < kRootCount; i++) {
+            rows.push_back(kRootItems[i].label);
+            enabled.push_back(kRootItems[i].enabled);
+        }
+        DrawList(overlay, "-gz-", rows, sMenuSel.load(), "C-Down: select   R+C-Down: close", &enabled);
+    }
+
+    void DrawMacroScreen(const std::shared_ptr<Ship::GameOverlay>& overlay) {
         const unsigned int slot = GzCurrentSlot();
         std::vector<std::string> rows = {
             "Save state",
@@ -334,9 +416,9 @@ class GzMenuOverlay final : public Ship::GuiWindow {
             "Export slot to disk...",
             "Import slot from disk",
             "Slot: < " + std::to_string(slot) + " >",
-            "Close",
+            "Back",
         };
-        DrawList(overlay, "-gz practice-", rows, sMenuSel.load(), "C-Down: select   R+C-Down: close");
+        DrawList(overlay, "-macro-", rows, sMenuSel.load(), "C-Down: select   B: back");
     }
 
     void DrawImportScreen(const std::shared_ptr<Ship::GameOverlay>& overlay) {

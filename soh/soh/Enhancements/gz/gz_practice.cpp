@@ -25,6 +25,7 @@
 
 #include <atomic>
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <mutex>
 #include <string>
@@ -43,6 +44,7 @@
 #include "soh/Enhancements/savestates.h"
 #include "soh/Enhancements/savestate_filedialog.h"
 #include "soh/Enhancements/Warping.h"
+#include "gz_watches.h"
 
 extern "C" {
 extern PlayState* gPlayState;
@@ -63,7 +65,7 @@ struct GzRootItem {
 static const GzRootItem kRootItems[] = {
     { "return", true },     { "warps", true },    { "scene", false },  { "cheats", false },
     { "inventory", false }, { "equips", false },  { "file", false },   { "macro", true },
-    { "watches", false },   { "debug", false },   { "settings", false },
+    { "watches", true },    { "debug", false },   { "settings", false },
 };
 static const int kRootCount = (int)(sizeof(kRootItems) / sizeof(kRootItems[0]));
 
@@ -85,6 +87,9 @@ enum GzScreen {
     GZ_SCREEN_WARP_CAT,      // pick a category (dungeons, bosses, towns, ...)
     GZ_SCREEN_WARP_PLACE,    // pick a place within the category
     GZ_SCREEN_WARP_ENTRANCE, // pick an entrance within the place
+    GZ_SCREEN_WATCHES,       // list active watches (+ "add watch")
+    GZ_SCREEN_WATCH_ADD,     // pick a variable from the catalog to add
+    GZ_SCREEN_WATCH_EDIT,    // edit one watch: move / type / remove
 };
 
 struct GzImportFile {
@@ -112,6 +117,14 @@ static std::atomic<int> sWarpCat{ 0 };         // category we descended into
 static std::atomic<int> sWarpPlace{ 0 };       // place we descended into
 static std::atomic<bool> sWarpSkippedPlace{ false }; // entered entrance screen straight
                                                      // from the category (single-place cat)
+
+// Watches browser: one cursor per screen, the watch being edited, and whether we're in
+// positioning mode (D-pad nudges the watch instead of moving the cursor).
+static std::atomic<int> sWatchSel{ 0 };           // cursor on the watches list
+static std::atomic<int> sWatchAddSel{ 0 };        // cursor on the catalog (add) screen
+static std::atomic<int> sWatchEditSel{ 0 };       // cursor on the edit screen
+static std::atomic<int> sWatchEditIdx{ 0 };       // active watch being edited
+static std::atomic<bool> sWatchPositioning{ false };
 
 // The overlay window. Kept hidden unless the menu is open, so it never participates in
 // the draw loop while closed (an always-shown borderless window left a black artifact
@@ -213,6 +226,9 @@ static void GzConfirmRootSelection() {
         GzGoToScreen(GZ_SCREEN_MACRO);
     } else if (strcmp(item.label, "warps") == 0) {
         GzEnterWarpsScreen();
+    } else if (strcmp(item.label, "watches") == 0) {
+        sWatchSel.store(0);
+        sScreen.store(GZ_SCREEN_WATCHES);
     } else if (strcmp(item.label, "return") == 0) {
         sMenuOpen.store(false);
     }
@@ -442,6 +458,103 @@ static void GzHandleWarpEntranceScreen(Input* input) {
     }
 }
 
+// Watches list rows: [0] "return", [1] "add watch", then one row per active watch.
+static void GzHandleWatchesScreen(Input* input) {
+    const int rowCount = 2 + GzWatch_Count();
+    if (!GzNavList(input, sWatchSel, rowCount)) {
+        return;
+    }
+    const int sel = sWatchSel.load();
+    if (sel == 0) {
+        GzGoToScreen(GZ_SCREEN_ROOT);
+    } else if (sel == 1) {
+        sWatchAddSel.store(0);
+        sScreen.store(GZ_SCREEN_WATCH_ADD);
+    } else {
+        sWatchEditIdx.store(sel - 2);
+        sWatchEditSel.store(0);
+        sWatchPositioning.store(false);
+        sScreen.store(GZ_SCREEN_WATCH_EDIT);
+    }
+}
+
+// Add screen rows: [0] "return", then one row per catalog variable.
+static void GzHandleWatchAddScreen(Input* input) {
+    if (!GzNavList(input, sWatchAddSel, GzWatch_CatalogCount() + 1)) {
+        return;
+    }
+    const int sel = sWatchAddSel.load();
+    if (sel == 0) {
+        sWatchSel.store(0);
+        sScreen.store(GZ_SCREEN_WATCHES);
+        return;
+    }
+    GzWatch_Add(sel - 1);
+    sWatchSel.store(0);
+    sScreen.store(GZ_SCREEN_WATCHES);
+}
+
+// Edit screen rows: [0] "return", [1] "move", [2] "type", [3] "remove".
+enum GzWatchEditEntry { GZ_WATCH_EDIT_BACK, GZ_WATCH_EDIT_MOVE, GZ_WATCH_EDIT_TYPE, GZ_WATCH_EDIT_REMOVE,
+                        GZ_WATCH_EDIT_COUNT };
+static void GzHandleWatchEditScreen(Input* input) {
+    const uint16_t pressed = input->press.button;
+    const int idx = sWatchEditIdx.load();
+
+    // Positioning mode: the D-pad nudges the watch; C-Down or B leaves the mode.
+    if (sWatchPositioning.load()) {
+        const float step = 2.0f;
+        if (CHECK_BTN_ALL(pressed, BTN_DUP)) {
+            GzWatch_Nudge(idx, 0.0f, -step);
+        } else if (CHECK_BTN_ALL(pressed, BTN_DDOWN)) {
+            GzWatch_Nudge(idx, 0.0f, step);
+        } else if (CHECK_BTN_ALL(pressed, BTN_DLEFT)) {
+            GzWatch_Nudge(idx, -step, 0.0f);
+        } else if (CHECK_BTN_ALL(pressed, BTN_DRIGHT)) {
+            GzWatch_Nudge(idx, step, 0.0f);
+        }
+        if (CHECK_BTN_ALL(pressed, BTN_CDOWN) || CHECK_BTN_ALL(pressed, BTN_B)) {
+            sWatchPositioning.store(false);
+        }
+        return;
+    }
+
+    int sel = sWatchEditSel.load();
+    if (CHECK_BTN_ALL(pressed, BTN_DUP)) {
+        sel = (sel + GZ_WATCH_EDIT_COUNT - 1) % GZ_WATCH_EDIT_COUNT;
+    } else if (CHECK_BTN_ALL(pressed, BTN_DDOWN)) {
+        sel = (sel + 1) % GZ_WATCH_EDIT_COUNT;
+    }
+    sWatchEditSel.store(sel);
+
+    if (sel == GZ_WATCH_EDIT_TYPE) {
+        if (CHECK_BTN_ALL(pressed, BTN_DRIGHT)) {
+            GzWatch_CycleType(idx, 1);
+        } else if (CHECK_BTN_ALL(pressed, BTN_DLEFT)) {
+            GzWatch_CycleType(idx, -1);
+        }
+    }
+
+    if (CHECK_BTN_ALL(pressed, BTN_CDOWN)) {
+        switch (sel) {
+            case GZ_WATCH_EDIT_BACK:
+                sWatchSel.store(0);
+                sScreen.store(GZ_SCREEN_WATCHES);
+                break;
+            case GZ_WATCH_EDIT_MOVE:
+                sWatchPositioning.store(true);
+                break;
+            case GZ_WATCH_EDIT_REMOVE:
+                GzWatch_Remove(idx);
+                sWatchSel.store(0);
+                sScreen.store(GZ_SCREEN_WATCHES);
+                break;
+            default:
+                break;
+        }
+    }
+}
+
 static void OnGameStateMainStartGzMode() {
     if (!GameInteractor::IsSaveLoaded(true) || gPlayState == nullptr) {
         return;
@@ -450,13 +563,20 @@ static void OnGameStateMainStartGzMode() {
         return;
     }
 
-    // Show the overlay only while the menu is open (avoids a stray black window when
-    // closed). One-frame lag on first draw is imperceptible.
-    if (sOverlay != nullptr && sOverlay->IsVisible() != sMenuOpen.load()) {
-        if (sMenuOpen.load()) {
-            sOverlay->Show();
-        } else {
-            sOverlay->Hide();
+    // Refresh the watch snapshot from live game state (valid gPlayState here on the game
+    // thread); the draw thread renders the cached values.
+    GzWatch_UpdateSnapshot(gPlayState);
+
+    // Keep the overlay shown while the menu is open OR any watch is active (watches draw
+    // on screen during play). Otherwise hide it to avoid a stray borderless window.
+    if (sOverlay != nullptr) {
+        const bool want = sMenuOpen.load() || GzWatch_Count() > 0;
+        if (sOverlay->IsVisible() != want) {
+            if (want) {
+                sOverlay->Show();
+            } else {
+                sOverlay->Hide();
+            }
         }
     }
 
@@ -494,6 +614,12 @@ static void OnGameStateMainStartGzMode() {
         GzHandleWarpPlaceScreen(input);
     } else if (sScreen.load() == GZ_SCREEN_WARP_ENTRANCE) {
         GzHandleWarpEntranceScreen(input);
+    } else if (sScreen.load() == GZ_SCREEN_WATCHES) {
+        GzHandleWatchesScreen(input);
+    } else if (sScreen.load() == GZ_SCREEN_WATCH_ADD) {
+        GzHandleWatchAddScreen(input);
+    } else if (sScreen.load() == GZ_SCREEN_WATCH_EDIT) {
+        GzHandleWatchEditScreen(input);
     } else if (sScreen.load() == GZ_SCREEN_MACRO) {
         GzHandleMacroScreen(input);
     } else {
@@ -515,9 +641,6 @@ class GzMenuOverlay final : public Ship::GuiWindow {
     void UpdateElement() override {
     }
     void DrawElement() override {
-        if (!sMenuOpen.load()) {
-            return;
-        }
         auto overlay = Ship::Context::GetRawInstance()->GetWindow()->GetGui()->GetGameOverlay();
         if (overlay == nullptr) {
             return;
@@ -535,18 +658,29 @@ class GzMenuOverlay final : public Ship::GuiWindow {
         mScale = std::max(1.5f, vp->Size.y / 540.0f);
         ImGui::SetWindowFontScale(mScale);
 
-        if (sScreen.load() == GZ_SCREEN_IMPORT) {
-            DrawImportScreen(overlay);
-        } else if (sScreen.load() == GZ_SCREEN_WARP_CAT) {
-            DrawWarpCatScreen(overlay);
-        } else if (sScreen.load() == GZ_SCREEN_WARP_PLACE) {
-            DrawWarpPlaceScreen(overlay);
-        } else if (sScreen.load() == GZ_SCREEN_WARP_ENTRANCE) {
-            DrawWarpEntranceScreen(overlay);
-        } else if (sScreen.load() == GZ_SCREEN_MACRO) {
-            DrawMacroScreen(overlay);
-        } else {
-            DrawRootScreen(overlay);
+        // Active watches draw on screen whether or not the menu is open.
+        DrawWatches(overlay);
+
+        if (sMenuOpen.load()) {
+            if (sScreen.load() == GZ_SCREEN_IMPORT) {
+                DrawImportScreen(overlay);
+            } else if (sScreen.load() == GZ_SCREEN_WARP_CAT) {
+                DrawWarpCatScreen(overlay);
+            } else if (sScreen.load() == GZ_SCREEN_WARP_PLACE) {
+                DrawWarpPlaceScreen(overlay);
+            } else if (sScreen.load() == GZ_SCREEN_WARP_ENTRANCE) {
+                DrawWarpEntranceScreen(overlay);
+            } else if (sScreen.load() == GZ_SCREEN_WATCHES) {
+                DrawWatchesScreen(overlay);
+            } else if (sScreen.load() == GZ_SCREEN_WATCH_ADD) {
+                DrawWatchAddScreen(overlay);
+            } else if (sScreen.load() == GZ_SCREEN_WATCH_EDIT) {
+                DrawWatchEditScreen(overlay);
+            } else if (sScreen.load() == GZ_SCREEN_MACRO) {
+                DrawMacroScreen(overlay);
+            } else {
+                DrawRootScreen(overlay);
+            }
         }
 
         ImGui::SetWindowFontScale(1.0f);
@@ -554,6 +688,11 @@ class GzMenuOverlay final : public Ship::GuiWindow {
 
   private:
     float mScale = 1.0f; // resolution-based UI scale, set each frame in DrawElement
+
+    // Mouse-drag state (Alt + left-drag to move a watch). -1 when not dragging.
+    int mDragIndex = -1;
+    ImVec2 mDragLastMouse{ 0.0f, 0.0f };
+    float mDragX = 0.0f, mDragY = 0.0f; // live unscaled position while dragging
 
     // Draws a gz-style list: the overlay's pixel font ("Press Start 2P") with a drop
     // shadow, left-aligned near the left edge and vertically about a fifth down, the
@@ -678,6 +817,117 @@ class GzMenuOverlay final : public Ship::GuiWindow {
         }
         DrawList(overlay, rows, sWarpEntranceSel.load());
     }
+
+    // On-screen watch values, drawn every frame at each watch's position (gz-style). The
+    // watch being positioned (controller) or dragged (mouse) is tinted gz-blue. Positions
+    // are stored unscaled, so multiply by the resolution scale to keep placement
+    // consistent across displays.
+    //
+    // Mouse: hold Alt and left-drag a watch to fine-tune its position. The drag runs on
+    // this (draw) thread; positions are pushed to the game thread via GzWatch_RequestMove,
+    // and persisted on release.
+    void DrawWatches(const std::shared_ptr<Ship::GameOverlay>& overlay) {
+        const std::vector<GzWatchDisplay> snap = GzWatch_Snapshot();
+        const ImVec4 white(1.0f, 1.0f, 1.0f, 1.0f);
+        const ImVec4 blue(0.45f, 0.62f, 1.0f, 1.0f);
+        const bool positioning = (sScreen.load() == GZ_SCREEN_WATCH_EDIT) && sWatchPositioning.load();
+        const int editIdx = sWatchEditIdx.load();
+
+        ImGuiIO& io = ImGui::GetIO();
+        const bool altDrag = io.KeyAlt && io.MouseDown[0];
+
+        // Drags snap to an 8px grid so watches line up with each other; hold Shift for
+        // free (un-snapped) fine positioning. mDragX/Y track the raw accumulated drag;
+        // the snapped value is what we draw and store.
+        const float kGrid = 8.0f;
+        const bool freeMove = io.KeyShift;
+        auto gridSnap = [&](float v) { return freeMove ? v : std::round(v / kGrid) * kGrid; };
+
+        // Cancel the drag if it ended, the alt key was released, or the watch vanished;
+        // commit the final (snapped) position to disk.
+        if (mDragIndex >= 0 && (!altDrag || mDragIndex >= (int)snap.size())) {
+            GzWatch_RequestMove(mDragIndex, gridSnap(mDragX), gridSnap(mDragY), true);
+            mDragIndex = -1;
+        }
+
+        // Track the live drag position from the mouse delta (unscaled).
+        if (mDragIndex >= 0) {
+            mDragX += (io.MousePos.x - mDragLastMouse.x) / mScale;
+            mDragY += (io.MousePos.y - mDragLastMouse.y) / mScale;
+            if (mDragX < 0.0f) mDragX = 0.0f;
+            if (mDragY < 0.0f) mDragY = 0.0f;
+            mDragLastMouse = io.MousePos;
+            GzWatch_RequestMove(mDragIndex, gridSnap(mDragX), gridSnap(mDragY), false);
+        }
+
+        for (int i = 0; i < (int)snap.size(); i++) {
+            const GzWatchDisplay& w = snap[i];
+            const bool dragging = (i == mDragIndex);
+            const float px = (dragging ? gridSnap(mDragX) : w.x) * mScale;
+            const float py = (dragging ? gridSnap(mDragY) : w.y) * mScale;
+
+            const ImVec4 color = (dragging || (positioning && i == editIdx)) ? blue : white;
+            const std::string text = w.label + ": " + w.value;
+
+            // Hit rect for starting a drag: where this row lands on screen, plus its size.
+            ImGui::SetCursorPos(ImVec2(px, py));
+            const ImVec2 screenPos = ImGui::GetCursorScreenPos();
+            ImVec2 size = overlay->CalculateTextSize(text.c_str());
+            size.x *= mScale;
+            size.y *= mScale;
+
+            overlay->TextDraw(px, py, true, color, "%s", text.c_str());
+
+            // Start a drag on an Alt+left-click that lands on this watch.
+            if (mDragIndex < 0 && io.KeyAlt && io.MouseClicked[0] &&
+                io.MousePos.x >= screenPos.x && io.MousePos.x <= screenPos.x + size.x &&
+                io.MousePos.y >= screenPos.y && io.MousePos.y <= screenPos.y + size.y) {
+                mDragIndex = i;
+                mDragX = w.x;
+                mDragY = w.y;
+                mDragLastMouse = io.MousePos;
+            }
+        }
+    }
+
+    // Watches list: "return", "add watch", then "label: value" per active watch.
+    void DrawWatchesScreen(const std::shared_ptr<Ship::GameOverlay>& overlay) {
+        const std::vector<GzWatchDisplay> snap = GzWatch_Snapshot();
+        std::vector<std::string> rows = { "return", "add watch" };
+        for (const auto& w : snap) {
+            rows.push_back(w.label + ": " + w.value);
+        }
+        DrawList(overlay, rows, sWatchSel.load());
+    }
+
+    void DrawWatchAddScreen(const std::shared_ptr<Ship::GameOverlay>& overlay) {
+        std::vector<std::string> rows;
+        rows.push_back("return"); // row 0
+        for (int i = 0; i < GzWatch_CatalogCount(); i++) {
+            rows.push_back(GzWatch_CatalogName(i));
+        }
+        DrawList(overlay, rows, sWatchAddSel.load());
+    }
+
+    void DrawWatchEditScreen(const std::shared_ptr<Ship::GameOverlay>& overlay) {
+        const std::vector<GzWatchDisplay> snap = GzWatch_Snapshot();
+        const int idx = sWatchEditIdx.load();
+        std::string title = "(watch)";
+        std::string typeName = "?";
+        if (idx >= 0 && idx < (int)snap.size()) {
+            title = snap[idx].label;
+            typeName = snap[idx].typeName;
+        }
+        const bool positioning = sWatchPositioning.load();
+        std::vector<std::string> rows = {
+            "return",
+            positioning ? "move (D-pad; C-down to set)" : "move",
+            "type < " + typeName + " >",
+            "remove",
+        };
+        // While positioning, no list row is "selected"; otherwise show the cursor.
+        DrawList(overlay, rows, positioning ? -1 : sWatchEditSel.load());
+    }
 };
 
 static void GzEnsureOverlayRegistered() {
@@ -704,6 +954,7 @@ static void GzEnsureOverlayRegistered() {
 
 void RegisterGzMode() {
     GzEnsureOverlayRegistered();
+    GzWatch_Load(); // restore persisted watches
     COND_HOOK(OnGameStateMainStart, CVAR_GZ_MODE_VALUE, OnGameStateMainStartGzMode);
 }
 

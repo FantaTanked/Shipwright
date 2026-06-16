@@ -42,6 +42,7 @@
 #include "soh/OTRGlobals.h"
 #include "soh/Enhancements/savestates.h"
 #include "soh/Enhancements/savestate_filedialog.h"
+#include "soh/Enhancements/Warping.h"
 
 extern "C" {
 extern PlayState* gPlayState;
@@ -60,7 +61,7 @@ struct GzRootItem {
     bool enabled;
 };
 static const GzRootItem kRootItems[] = {
-    { "return", true },     { "warps", false },   { "scene", false },  { "cheats", false },
+    { "return", true },     { "warps", true },    { "scene", false },  { "cheats", false },
     { "inventory", false }, { "equips", false },  { "file", false },   { "macro", true },
     { "watches", false },   { "debug", false },   { "settings", false },
 };
@@ -81,6 +82,9 @@ enum GzScreen {
     GZ_SCREEN_ROOT,
     GZ_SCREEN_MACRO,
     GZ_SCREEN_IMPORT,
+    GZ_SCREEN_WARP_CAT,      // pick a category (dungeons, bosses, towns, ...)
+    GZ_SCREEN_WARP_PLACE,    // pick a place within the category
+    GZ_SCREEN_WARP_ENTRANCE, // pick an entrance within the place
 };
 
 struct GzImportFile {
@@ -98,6 +102,17 @@ static std::atomic<int> sImportSel{ 0 };
 static std::mutex sImportMutex;
 static std::vector<GzImportFile> sImportFiles;
 
+// Warps browser: one cursor per nav level, plus the chosen category/place we descended
+// into. The category/place/entrance strings come from read-only static tables (see
+// Warping.cpp), so the draw thread can query them directly without a snapshot/mutex.
+static std::atomic<int> sWarpCatSel{ 0 };      // cursor on the category screen
+static std::atomic<int> sWarpPlaceSel{ 0 };    // cursor on the place screen
+static std::atomic<int> sWarpEntranceSel{ 0 }; // cursor on the entrance screen
+static std::atomic<int> sWarpCat{ 0 };         // category we descended into
+static std::atomic<int> sWarpPlace{ 0 };       // place we descended into
+static std::atomic<bool> sWarpSkippedPlace{ false }; // entered entrance screen straight
+                                                     // from the category (single-place cat)
+
 // The overlay window. Kept hidden unless the menu is open, so it never participates in
 // the draw loop while closed (an always-shown borderless window left a black artifact
 // when the OS window was moved/resized).
@@ -112,6 +127,31 @@ static std::string GzSlotFilePath(unsigned int slot) {
     return (std::filesystem::path(SaveStateMgr::GetStateDirectory()) /
             ("savestate_" + std::to_string(slot) + ".gzs"))
         .string();
+}
+
+// D-pad up/down auto-repeat: navigation is edge-triggered (input->press), so holding a
+// direction would otherwise move one row and stop. Each frame the menu is open we track
+// how long up/down has been held and, past an initial delay, synthesize extra press
+// events at a fixed interval so the cursor keeps scrolling. Counts are in game frames
+// (~20/s), so ~0.4s before repeat then ~10 rows/s.
+static int sDpadRepeatDir = 0;    // -1 = up held, +1 = down held, 0 = neither
+static int sDpadHeldFrames = 0;   // frames the current direction has been held
+static void GzApplyDpadRepeat(Input* input) {
+    const uint16_t cur = input->cur.button;
+    const int dir = CHECK_BTN_ALL(cur, BTN_DUP) ? -1 : (CHECK_BTN_ALL(cur, BTN_DDOWN) ? 1 : 0);
+    if (dir == 0 || dir != sDpadRepeatDir) {
+        // Released, or a fresh press in a new direction: the real press edge handles the
+        // first move; just (re)start the hold timer.
+        sDpadRepeatDir = dir;
+        sDpadHeldFrames = 0;
+        return;
+    }
+    const int kInitialDelay = 8;  // frames held before auto-repeat begins
+    const int kRepeatPeriod = 2;  // frames between synthesized presses
+    sDpadHeldFrames++;
+    if (sDpadHeldFrames >= kInitialDelay && (sDpadHeldFrames - kInitialDelay) % kRepeatPeriod == 0) {
+        input->press.button |= (dir < 0) ? BTN_DUP : BTN_DDOWN;
+    }
 }
 
 // While the menu is open only the D-pad is captured for navigation; the rest of the
@@ -148,6 +188,12 @@ static void GzEnterImportScreen() {
     sScreen.store(GZ_SCREEN_IMPORT);
 }
 
+// Enter the warps browser at the top (category) level.
+static void GzEnterWarpsScreen() {
+    sWarpCatSel.store(0);
+    sScreen.store(GZ_SCREEN_WARP_CAT);
+}
+
 // Switch screens, resetting the (shared) row cursor.
 static void GzGoToScreen(GzScreen screen) {
     sScreen.store(screen);
@@ -165,6 +211,8 @@ static void GzConfirmRootSelection() {
     }
     if (strcmp(item.label, "macro") == 0) {
         GzGoToScreen(GZ_SCREEN_MACRO);
+    } else if (strcmp(item.label, "warps") == 0) {
+        GzEnterWarpsScreen();
     } else if (strcmp(item.label, "return") == 0) {
         sMenuOpen.store(false);
     }
@@ -216,6 +264,83 @@ static void GzConfirmImportSelection() {
     if (!path.empty()) {
         OTRGlobals::Instance->gSaveStateMgr->ImportState(GzCurrentSlot(), path);
         GzGoToScreen(GZ_SCREEN_MACRO); // back to the macro screen; apply with Load
+    }
+}
+
+// Category screen rows: [0] "return", then one row per category.
+static void GzConfirmWarpCatSelection() {
+    const int sel = sWarpCatSel.load();
+    if (sel == 0) {
+        GzGoToScreen(GZ_SCREEN_ROOT); // "return" row
+        return;
+    }
+    const int cat = sel - 1;
+    if (cat < 0 || cat >= GzWarp_CategoryCount()) {
+        return;
+    }
+    sWarpCat.store(cat);
+    // A non-flat category with a single place (e.g. Shops) has nothing to choose at the
+    // place level, so descend straight to that place's entrances.
+    if (!GzWarp_CategoryIsFlat(cat) && GzWarp_PlaceCount(cat) == 1) {
+        sWarpPlace.store(0);
+        sWarpSkippedPlace.store(true);
+        sWarpEntranceSel.store(0);
+        sScreen.store(GZ_SCREEN_WARP_ENTRANCE);
+        return;
+    }
+    sWarpPlaceSel.store(0);
+    sScreen.store(GZ_SCREEN_WARP_PLACE);
+}
+
+// Place screen rows: [0] "return", then one row per place in the chosen category. For a
+// flat category (bosses) the place row is the warp leaf; otherwise it descends.
+static void GzConfirmWarpPlaceSelection() {
+    const int sel = sWarpPlaceSel.load();
+    if (sel == 0) {
+        GzGoToScreen(GZ_SCREEN_WARP_CAT);
+        sWarpCatSel.store(0);
+        return;
+    }
+    const int cat = sWarpCat.load();
+    const int place = sel - 1;
+    if (place < 0 || place >= GzWarp_PlaceCount(cat)) {
+        return;
+    }
+    if (GzWarp_CategoryIsFlat(cat)) {
+        if (GzWarp_Do(cat, place, 0)) {
+            sMenuOpen.store(false); // close so the warp transition is visible
+        }
+        return;
+    }
+    sWarpPlace.store(place);
+    sWarpSkippedPlace.store(false);
+    sWarpEntranceSel.store(0);
+    sScreen.store(GZ_SCREEN_WARP_ENTRANCE);
+}
+
+// Entrance screen rows: [0] "return", then one row per entrance in the chosen place.
+static void GzConfirmWarpEntranceSelection() {
+    const int sel = sWarpEntranceSel.load();
+    if (sel == 0) {
+        // Return one real level up: back to the category screen if we skipped the place
+        // level on the way in (single-place category), otherwise to the place screen.
+        if (sWarpSkippedPlace.load()) {
+            GzGoToScreen(GZ_SCREEN_WARP_CAT);
+            sWarpCatSel.store(0);
+        } else {
+            GzGoToScreen(GZ_SCREEN_WARP_PLACE);
+            sWarpPlaceSel.store(0);
+        }
+        return;
+    }
+    const int cat = sWarpCat.load();
+    const int place = sWarpPlace.load();
+    const int entrance = sel - 1;
+    if (entrance < 0 || entrance >= GzWarp_EntranceCount(cat, place)) {
+        return;
+    }
+    if (GzWarp_Do(cat, place, entrance)) {
+        sMenuOpen.store(false); // close so the warp transition is visible
     }
 }
 
@@ -283,6 +408,40 @@ static void GzHandleImportScreen(Input* input) {
     }
 }
 
+// Shared list-navigation helper for the warps screens: move `cursor` over `rowCount` rows
+// (wrapping) on D-pad up/down. Returns true if C-Down (confirm) was pressed.
+static bool GzNavList(Input* input, std::atomic<int>& cursor, int rowCount) {
+    const uint16_t pressed = input->press.button;
+    int sel = cursor.load();
+    if (rowCount > 0) {
+        if (CHECK_BTN_ALL(pressed, BTN_DUP)) {
+            sel = (sel + rowCount - 1) % rowCount;
+        } else if (CHECK_BTN_ALL(pressed, BTN_DDOWN)) {
+            sel = (sel + 1) % rowCount;
+        }
+    }
+    cursor.store(sel);
+    return CHECK_BTN_ALL(pressed, BTN_CDOWN);
+}
+
+static void GzHandleWarpCatScreen(Input* input) {
+    if (GzNavList(input, sWarpCatSel, GzWarp_CategoryCount() + 1)) {
+        GzConfirmWarpCatSelection();
+    }
+}
+
+static void GzHandleWarpPlaceScreen(Input* input) {
+    if (GzNavList(input, sWarpPlaceSel, GzWarp_PlaceCount(sWarpCat.load()) + 1)) {
+        GzConfirmWarpPlaceSelection();
+    }
+}
+
+static void GzHandleWarpEntranceScreen(Input* input) {
+    if (GzNavList(input, sWarpEntranceSel, GzWarp_EntranceCount(sWarpCat.load(), sWarpPlace.load()) + 1)) {
+        GzConfirmWarpEntranceSelection();
+    }
+}
+
 static void OnGameStateMainStartGzMode() {
     if (!GameInteractor::IsSaveLoaded(true) || gPlayState == nullptr) {
         return;
@@ -322,11 +481,19 @@ static void OnGameStateMainStartGzMode() {
         return;
     }
 
-    // Menu is open. R + C-Down closes it; a bare C-Down confirms (handled per screen).
+    // Menu is open. Synthesize repeat presses for a held D-pad so lists keep scrolling,
+    // then R + C-Down closes it; a bare C-Down confirms (handled per screen).
+    GzApplyDpadRepeat(input);
     if (rHeld && cDownPressed) {
         sMenuOpen.store(false);
     } else if (sScreen.load() == GZ_SCREEN_IMPORT) {
         GzHandleImportScreen(input);
+    } else if (sScreen.load() == GZ_SCREEN_WARP_CAT) {
+        GzHandleWarpCatScreen(input);
+    } else if (sScreen.load() == GZ_SCREEN_WARP_PLACE) {
+        GzHandleWarpPlaceScreen(input);
+    } else if (sScreen.load() == GZ_SCREEN_WARP_ENTRANCE) {
+        GzHandleWarpEntranceScreen(input);
     } else if (sScreen.load() == GZ_SCREEN_MACRO) {
         GzHandleMacroScreen(input);
     } else {
@@ -370,6 +537,12 @@ class GzMenuOverlay final : public Ship::GuiWindow {
 
         if (sScreen.load() == GZ_SCREEN_IMPORT) {
             DrawImportScreen(overlay);
+        } else if (sScreen.load() == GZ_SCREEN_WARP_CAT) {
+            DrawWarpCatScreen(overlay);
+        } else if (sScreen.load() == GZ_SCREEN_WARP_PLACE) {
+            DrawWarpPlaceScreen(overlay);
+        } else if (sScreen.load() == GZ_SCREEN_WARP_ENTRANCE) {
+            DrawWarpEntranceScreen(overlay);
         } else if (sScreen.load() == GZ_SCREEN_MACRO) {
             DrawMacroScreen(overlay);
         } else {
@@ -397,12 +570,29 @@ class GzMenuOverlay final : public Ship::GuiWindow {
         // match the SetWindowFontScale applied to the text itself. gz uses tight spacing.
         const float lineH = (overlay->CalculateTextSize("Ag").y + 1.0f) * mScale;
 
+        const ImVec4 grey(0.66f, 0.66f, 0.66f, 1.0f);
+
         // gz anchors the menu to the left edge, roughly a fifth of the way down.
         const ImGuiViewport* vp = ImGui::GetMainViewport();
         const float x = vp->Size.x * 0.045f;
-        float y = vp->Size.y * 0.22f;
+        const float top = vp->Size.y * 0.22f;
 
-        for (int i = 0; i < (int)rows.size(); i++) {
+        // Long lists (e.g. the warp destinations) scroll: show a window of rows around
+        // the selection, leaving room above/below for the "more" indicators.
+        const int total = (int)rows.size();
+        const int maxRows = std::max(1, (int)((vp->Size.y * 0.7f) / lineH));
+        int start = 0;
+        if (total > maxRows && sel >= 0) {
+            start = std::clamp(sel - maxRows / 2, 0, total - maxRows);
+        }
+        const int end = std::min(total, start + maxRows);
+
+        float y = top;
+        if (start > 0) {
+            overlay->TextDraw(x, y, true, grey, "  ^");
+            y += lineH;
+        }
+        for (int i = start; i < end; i++) {
             const bool selected = (i == sel);
             const bool rowEnabled = (enabled == nullptr) || (i < (int)enabled->size() && (*enabled)[i]);
             ImVec4 color;
@@ -413,6 +603,9 @@ class GzMenuOverlay final : public Ship::GuiWindow {
             }
             overlay->TextDraw(x, y, true, color, "%s", rows[i].c_str());
             y += lineH;
+        }
+        if (end < total) {
+            overlay->TextDraw(x, y, true, grey, "  v");
         }
     }
 
@@ -454,6 +647,36 @@ class GzMenuOverlay final : public Ship::GuiWindow {
             rows.push_back("(no .gzs files)"); // informational, not selectable
         }
         DrawList(overlay, rows, sel);
+    }
+
+    void DrawWarpCatScreen(const std::shared_ptr<Ship::GameOverlay>& overlay) {
+        std::vector<std::string> rows;
+        rows.push_back("return"); // row 0
+        for (int i = 0; i < GzWarp_CategoryCount(); i++) {
+            rows.push_back(GzWarp_CategoryName(i));
+        }
+        DrawList(overlay, rows, sWarpCatSel.load());
+    }
+
+    void DrawWarpPlaceScreen(const std::shared_ptr<Ship::GameOverlay>& overlay) {
+        const int cat = sWarpCat.load();
+        std::vector<std::string> rows;
+        rows.push_back("return"); // row 0
+        for (int i = 0; i < GzWarp_PlaceCount(cat); i++) {
+            rows.push_back(GzWarp_PlaceName(cat, i));
+        }
+        DrawList(overlay, rows, sWarpPlaceSel.load());
+    }
+
+    void DrawWarpEntranceScreen(const std::shared_ptr<Ship::GameOverlay>& overlay) {
+        const int cat = sWarpCat.load();
+        const int place = sWarpPlace.load();
+        std::vector<std::string> rows;
+        rows.push_back("return"); // row 0
+        for (int i = 0; i < GzWarp_EntranceCount(cat, place); i++) {
+            rows.push_back(GzWarp_EntranceName(cat, place, i));
+        }
+        DrawList(overlay, rows, sWarpEntranceSel.load());
     }
 };
 

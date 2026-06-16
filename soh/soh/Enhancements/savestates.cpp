@@ -837,8 +837,18 @@ static uint64_t GzComputeBuildKey(void) {
     return (uint64_t)anchor ^ ((uint64_t)sizeof(SaveStateInfo) * 0x9E3779B97F4A7C15ULL);
 }
 
-static std::filesystem::path GzStateFilePath(unsigned int slot) {
-    return std::filesystem::path("savestate_" + std::to_string(slot) + ".gzs");
+// Directory exported states default to: "<cwd>/savestates". Created on demand.
+std::string SaveStateMgr::GetStateDirectory(void) {
+    std::filesystem::path dir = std::filesystem::path("savestates");
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    return dir.string();
+}
+
+// Default filename suggested in the export dialog for a given slot.
+static std::filesystem::path GzDefaultStateFile(unsigned int slot) {
+    return std::filesystem::path(SaveStateMgr::GetStateDirectory()) /
+           ("savestate_" + std::to_string(slot) + ".gzs");
 }
 
 extern "C" void ProcessSaveStateRequests(void) {
@@ -905,9 +915,9 @@ void SaveStateMgr::ProcessSaveStateRequests(void) {
                 header.buildKey = GzComputeBuildKey();
                 header.infoSize = sizeof(SaveStateInfo);
 
-                std::ofstream out(GzStateFilePath(request.slot), std::ios::binary | std::ios::trunc);
+                std::ofstream out(std::filesystem::u8path(request.path), std::ios::binary | std::ios::trunc);
                 if (!out) {
-                    SPDLOG_ERROR("Failed to open state file for export, slot {}", request.slot);
+                    SPDLOG_ERROR("Failed to open state file for export, slot {} ({})", request.slot, request.path);
                     overlay->TextDrawNotification(1.0f, true, "export failed (slot %u)", request.slot);
                     break;
                 }
@@ -916,17 +926,17 @@ void SaveStateMgr::ProcessSaveStateRequests(void) {
                 out.write(reinterpret_cast<const char*>(&header), sizeof(header));
                 out.write(reinterpret_cast<const char*>(info), sizeof(SaveStateInfo));
                 out.close();
-                SPDLOG_INFO("[SOH] Exported state slot {} to disk", request.slot);
+                SPDLOG_INFO("[SOH] Exported state slot {} to {}", request.slot, request.path);
                 overlay->TextDrawNotification(1.0f, true, "exported state %u", request.slot);
                 break;
             }
             case RequestType::IMPORT: {
                 auto overlay =
                     Ship::Context::GetRawInstance()->GetWindow()->GetGui()->GetGameOverlay();
-                std::ifstream in(GzStateFilePath(request.slot), std::ios::binary);
+                std::ifstream in(std::filesystem::u8path(request.path), std::ios::binary);
                 if (!in) {
-                    SPDLOG_ERROR("No state file to import for slot {}", request.slot);
-                    overlay->TextDrawNotification(1.0f, true, "no file for slot %u", request.slot);
+                    SPDLOG_ERROR("No state file to import for slot {} ({})", request.slot, request.path);
+                    overlay->TextDrawNotification(1.0f, true, "can't open file for slot %u", request.slot);
                     break;
                 }
                 SaveStateHeader header{};
@@ -956,7 +966,7 @@ void SaveStateMgr::ProcessSaveStateRequests(void) {
                     break;
                 }
                 st->fromDisk = true;
-                SPDLOG_INFO("[SOH] Imported state slot {} from disk", request.slot);
+                SPDLOG_INFO("[SOH] Imported state slot {} from {}", request.slot, request.path);
                 overlay->TextDrawNotification(1.0f, true, "imported state %u (press load)", request.slot);
                 break;
             }
@@ -968,23 +978,29 @@ void SaveStateMgr::ProcessSaveStateRequests(void) {
     }
 }
 
-SaveStateReturn SaveStateMgr::ExportState(unsigned int slot) {
+SaveStateReturn SaveStateMgr::ExportState(unsigned int slot, const std::string& path) {
     if (!states.contains(slot)) {
         Ship::Context::GetRawInstance()->GetWindow()->GetGui()->GetGameOverlay()->TextDrawNotification(
             1.0f, true, "slot %u empty, nothing to export", slot);
         return SaveStateReturn::FAIL_STATE_EMPTY;
     }
-    requests.push({ slot, RequestType::EXPORT });
+    if (path.empty()) { // dialog cancelled
+        return SaveStateReturn::FAIL_BAD_FILE;
+    }
+    requests.push({ slot, RequestType::EXPORT, path });
     return SaveStateReturn::SUCCESS;
 }
 
-SaveStateReturn SaveStateMgr::ImportState(unsigned int slot) {
-    if (!std::filesystem::exists(GzStateFilePath(slot))) {
-        Ship::Context::GetRawInstance()->GetWindow()->GetGui()->GetGameOverlay()->TextDrawNotification(
-            1.0f, true, "no file for slot %u", slot);
+SaveStateReturn SaveStateMgr::ImportState(unsigned int slot, const std::string& path) {
+    if (path.empty()) { // dialog cancelled
         return SaveStateReturn::FAIL_BAD_FILE;
     }
-    requests.push({ slot, RequestType::IMPORT });
+    if (!std::filesystem::exists(std::filesystem::u8path(path))) {
+        Ship::Context::GetRawInstance()->GetWindow()->GetGui()->GetGameOverlay()->TextDrawNotification(
+            1.0f, true, "file not found");
+        return SaveStateReturn::FAIL_BAD_FILE;
+    }
+    requests.push({ slot, RequestType::IMPORT, path });
     return SaveStateReturn::SUCCESS;
 }
 

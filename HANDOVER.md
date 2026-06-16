@@ -12,12 +12,14 @@ crashes in some cases — not yet shippable. Same-session F5/F7 should still wor
 
 ## 1. The goal
 
-Let a player press F5 (save) / F11 (export to disk), **fully close soh.exe**,
-relaunch, F12 (import) / F7 (load), and be back exactly where they saved — same
+Let a player press F5 (save) / F3 (export to disk), **fully close soh.exe**,
+relaunch, F4 (import) / F7 (load), and be back exactly where they saved — same
 build only. No compatibility with real gz/GameCube states.
 
-Keys: **F5** save (in-memory), **F7** load, **F6** cycle slot, **F11** export slot to
-`savestate_<N>.gzs` (next to exe), **F12** import slot from disk. After F12, F7 applies.
+Keys: **F5** save (in-memory), **F7** load, **F6** cycle slot, **F3** export slot
+(opens a native Save dialog, defaulting to `savestates/savestate_<N>.gzs`), **F4**
+import slot (native Open dialog). After F4, F7 applies. (F3/F4 chosen because F11 is
+the libultraship fullscreen key and F2 is mouse-capture.)
 
 ---
 
@@ -164,7 +166,11 @@ should NOT include the dynamic-base bit (value was `0x8120`).
 - `soh/soh/Enhancements/savestates.cpp` / `.h` — disk export/import, build-hash header,
   arena snapshot/restore, `Load(crossSession)`. (Also fixed an old `LoadMiscCodeData`
   self-memcpy bug.) Note: dead `deferred*` members remain in the header (harmless).
-- `soh/soh/OTRGlobals.cpp` — F11/F12 key handlers.
+- `soh/soh/OTRGlobals.cpp` — F3 (export) / F4 (import) key handlers; opens the native
+  file dialog (via `savestate_filedialog`) and passes the chosen path to the mgr.
+- `soh/soh/Enhancements/savestate_filedialog.{h,cpp}` — isolated wrapper around
+  portable-file-dialogs (kept in its own TU so the Windows shell headers it drags in
+  don't collide with game enums like `PS_NONE`).
 - `libultraship` (submodule, uncommitted): `GzResArena.{h,cpp}` (new),
   `ResourceLoader.cpp` (route scope), `ResourceManager.{h,cpp}`
   (`GzClearCacheForStateLoad`), `fast/.../Vertex.h` (touched then reverted — should be

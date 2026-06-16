@@ -37,6 +37,7 @@
 #include "soh/Enhancements/randomizer/settings.h"
 #include "Enhancements/gameplaystats.h"
 #include "soh/Enhancements/savestates.h"
+#include "soh/Enhancements/savestate_filedialog.h"
 #include "frame_interpolation.h"
 #include "SohGui/SohMenu.h"
 #include "SohGui/SohGui.hpp"
@@ -1774,8 +1775,10 @@ extern "C" void Graph_StartFrame() {
 
             break;
         }
-        case KbScancode::LUS_KB_F11: {
-            // ship-gz: export the current slot's savestate to disk (survives a restart).
+        case KbScancode::LUS_KB_F3: {
+            // ship-gz: export the current slot's savestate to a user-chosen file (survives a
+            // restart). The native file dialog is modal, so it runs here on the input thread;
+            // only the resolved path is queued for the game thread to write.
             if (CVarGetInteger(CVAR_CHEAT("SaveStatesEnabled"), 0) == 0) {
                 std::dynamic_pointer_cast<Fast::Fast3dGui>(Ship::Context::GetRawInstance()->GetWindow()->GetGui())
                     ->GetGameOverlay()
@@ -1783,11 +1786,16 @@ extern "C" void Graph_StartFrame() {
                 return;
             }
             const unsigned int slot = OTRGlobals::Instance->gSaveStateMgr->GetCurrentSlot();
-            OTRGlobals::Instance->gSaveStateMgr->ExportState(slot);
+            std::string defaultPath =
+                (std::filesystem::path(SaveStateMgr::GetStateDirectory()) /
+                 ("savestate_" + std::to_string(slot) + ".gzs"))
+                    .string();
+            std::string path = GzPromptExportStatePath(defaultPath);
+            OTRGlobals::Instance->gSaveStateMgr->ExportState(slot, path);
             break;
         }
-        case KbScancode::LUS_KB_F12: {
-            // ship-gz: import the current slot from disk; apply with F7 afterwards.
+        case KbScancode::LUS_KB_F4: {
+            // ship-gz: import a chosen savestate file into the current slot; apply with F7.
             if (CVarGetInteger(CVAR_CHEAT("SaveStatesEnabled"), 0) == 0) {
                 std::dynamic_pointer_cast<Fast::Fast3dGui>(Ship::Context::GetRawInstance()->GetWindow()->GetGui())
                     ->GetGameOverlay()
@@ -1795,7 +1803,8 @@ extern "C" void Graph_StartFrame() {
                 return;
             }
             const unsigned int slot = OTRGlobals::Instance->gSaveStateMgr->GetCurrentSlot();
-            OTRGlobals::Instance->gSaveStateMgr->ImportState(slot);
+            std::string path = GzPromptImportStatePath(SaveStateMgr::GetStateDirectory());
+            OTRGlobals::Instance->gSaveStateMgr->ImportState(slot, path);
             break;
         }
 #if defined(_WIN32) || defined(__APPLE__)

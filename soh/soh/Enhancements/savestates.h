@@ -6,6 +6,7 @@
 #include <unordered_map>
 #include <memory>
 #include <mutex>
+#include <string>
 
 enum class SaveStateReturn {
     SUCCESS,
@@ -43,6 +44,8 @@ enum class RequestType {
 typedef struct SaveStateRequest {
     unsigned int slot;
     RequestType type;
+    // For EXPORT/IMPORT: the user-chosen file path. Empty for SAVE/LOAD.
+    std::string path;
 } SaveStateRequest;
 
 class SaveState;
@@ -72,11 +75,16 @@ class SaveStateMgr {
     void SetCurrentSlot(unsigned int slot);
     unsigned int GetCurrentSlot(void);
 
-    // Persist the in-memory state for `slot` to disk / reload it from disk into
-    // `slot`. Routed through the request queue so the states map is only touched
-    // on the game thread. After ImportState the slot can be applied with LOAD.
-    SaveStateReturn ExportState(unsigned int slot);
-    SaveStateReturn ImportState(unsigned int slot);
+    // Persist the in-memory state for `slot` to the user-chosen file `path` / read
+    // `path` from disk into `slot`. Routed through the request queue so the states
+    // map is only touched on the game thread. After ImportState the slot can be
+    // applied with LOAD. The file dialog itself is driven by the caller (so the
+    // modal dialog runs off the game thread); only the resolved path is passed here.
+    SaveStateReturn ExportState(unsigned int slot, const std::string& path);
+    SaveStateReturn ImportState(unsigned int slot, const std::string& path);
+
+    // Default directory for exported/imported states ("<exe>/savestates").
+    static std::string GetStateDirectory(void);
 
     SaveStateMgr& operator=(const SaveStateMgr& rhs) = delete;
     SaveStateMgr(const SaveStateMgr& rhs) = delete;

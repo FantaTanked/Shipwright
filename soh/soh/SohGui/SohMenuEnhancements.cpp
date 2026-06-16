@@ -1883,7 +1883,16 @@ void SohMenu::AddMenuEnhancements() {
     AddWidget(path, "I understand, enable save states", WIDGET_CVAR_CHECKBOX)
         .PreFunc([](WidgetInfo& info) { info.isHidden = CVarGetInteger(CVAR_CHEAT("SaveStatePromise"), 0) == 0; })
         .CVar(CVAR_CHEAT("SaveStatesEnabled"))
-        .Options(CheckboxOptions().Tooltip("F5 to save, F6 to change slots, F7 to load"));
+        .Options(CheckboxOptions().Tooltip("F5 to save, F6 to change slots, F7 to load, F3 to export a slot to "
+                                           "disk, F4 to import one."));
+    AddWidget(path, "gz mode (controller savestates)", WIDGET_CVAR_CHECKBOX)
+        .PreFunc([](WidgetInfo& info) {
+            info.isHidden = CVarGetInteger(CVAR_CHEAT("SaveStatePromise"), 0) == 0 ||
+                            CVarGetInteger(CVAR_CHEAT("SaveStatesEnabled"), 0) == 0;
+        })
+        .CVar(CVAR_CHEAT("GzMode"))
+        .Options(CheckboxOptions().Tooltip("gz-style practice mode: drive savestates with the controller. "
+                                           "D-pad Left saves the current slot, D-pad Right loads it."));
 
     AddWidget(path, "Beta Quest", WIDGET_SEPARATOR_TEXT);
     AddWidget(path, "Enable Beta Quest", WIDGET_CVAR_CHECKBOX)

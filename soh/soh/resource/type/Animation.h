@@ -72,6 +72,7 @@ class Animation : public Ship::Resource<AnimationData> {
 
     AnimationData* GetPointer();
     size_t GetPointerSize();
+    std::vector<std::pair<void*, size_t>> GetSubAllocations() override;
 
     AnimationType type;
     AnimationData animationData;

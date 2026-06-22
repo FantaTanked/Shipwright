@@ -22,6 +22,7 @@ class Path : public Ship::Resource<PathData> {
 
     PathData* GetPointer();
     size_t GetPointerSize();
+    std::vector<std::pair<void*, size_t>> GetSubAllocations() override;
 
     uint32_t numPaths;
     std::vector<PathData> pathData;

@@ -20,7 +20,22 @@
 
 #include <libultraship/libultraship.h>
 
+#include <cstdio>
+#include <cstring>
+#include <filesystem>
+#include <string>
+#include <vector>
+#include <algorithm>
+#include <utility>
+
 extern "C" PlayState* gPlayState;
+extern "C" uintptr_t gExeBase; // soh.exe image base (main.c), for cross-restart code-pointer relocation
+extern "C" uint32_t gExeSize;  // soh.exe image size (main.c)
+
+// Magic + format version for on-disk savestate files (cross-session persistence). Bump the version whenever
+// the on-disk layout changes (e.g. when the relocation metadata is added) so older files are cleanly rejected.
+#define SAVESTATE_DISK_MAGIC 0x53534F48u // "SSOH"
+#define SAVESTATE_DISK_VERSION 5u        // v5: resource table = main + typed sub-allocations (GetSubAllocations)
 
 // FROM z_lights.c
 // I didn't feel like moving it into a header file.
@@ -338,7 +353,9 @@ class SaveState {
     std::shared_ptr<SaveStateInfo> info;
 
     void Save(void);
-    void Load(void);
+    // crossRestart: this load follows a quit/relaunch, so the saved audio context's resource tables are stale --
+    // skip restoring audio and keep this session's live audio instead (caller re-triggers the scene's music).
+    void Load(bool crossRestart = false);
     void BackupSeqScriptState(void);
     void LoadSeqScriptState(void);
     void BackupCameraData(void);
@@ -350,6 +367,12 @@ class SaveState {
 
     void SaveMiscCodeData(void);
     void LoadMiscCodeData(void);
+
+    // Cross-session persistence: serialize/restore the captured `info` blob to a per-slot file. POD blob, so
+    // a single fwrite/fread is valid; a header guards magic/version/size so a stale or wrong-build file is
+    // rejected, never applied.
+    bool WriteToDisk(void);
+    bool ReadFromDisk(void);
 
     SaveStateInfo* GetSaveStateInfo(void);
 };
@@ -817,6 +840,260 @@ extern "C" void ProcessSaveStateRequests(void) {
     OTRGlobals::Instance->gSaveStateMgr->ProcessSaveStateRequests();
 }
 
+static std::string SaveStateDiskPath(unsigned int slot) {
+    std::string dir = Ship::Context::GetPathRelativeToAppDirectory("savestates");
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    return dir + "/slot" + std::to_string(slot) + ".savestate";
+}
+
+// B1: relocate code/function pointers across a restart. ASLR shifts the whole soh.exe image by one delta, so
+// every captured pointer that fell inside the save-time image range is patched by (newBase - oldBase). Scans
+// the whole info blob at 8-byte stride (x64 pointers are aligned); audio/heap pointers fall outside the EXE
+// range and are untouched. A no-op when the image didn't move (in-session load => delta 0).
+static void SaveState_RelocateExePointers(SaveStateInfo* info, uint64_t oldBase, uint32_t oldSize, uint64_t newBase) {
+    if (oldBase == 0 || newBase == 0 || oldBase == newBase) {
+        return;
+    }
+    const intptr_t delta = (intptr_t)(newBase - oldBase);
+    const uintptr_t lo = (uintptr_t)oldBase;
+    const uintptr_t hi = lo + oldSize;
+    uintptr_t* p = reinterpret_cast<uintptr_t*>(info);
+    const size_t n = sizeof(SaveStateInfo) / sizeof(uintptr_t);
+    size_t count = 0;
+    for (size_t i = 0; i < n; i++) {
+        if (p[i] >= lo && p[i] < hi) {
+            p[i] = (uintptr_t)((intptr_t)p[i] + delta);
+            count++;
+        }
+    }
+    SPDLOG_INFO("[SaveState] relocated {} EXE/code pointers (delta {:#x})", count, (uintptr_t)delta);
+}
+
+// subIndex in a SaveStateResEntry selects which block of a resource an entry covers. The two negative values are
+// singleton blocks; any value >= 0 is the i-th GetSubAllocations() block.
+static constexpr int32_t kResMainPayload = -1; // res->GetRawPointer()
+static constexpr int32_t kResObjectPtr = -2;   // the IResource object pointer itself (null-payload res, e.g. Scene)
+
+// B2 save side: for every loaded resource, record its main payload plus each typed sub-allocation
+// it declares (subIndex i, from GetSubAllocations -- e.g. a skeleton's limb array). On load these blocks are
+// re-resolved from the reloaded resource and every captured heap pointer aimed at them is relocated.
+static std::vector<SaveStateResEntry> SaveState_CollectResources(void) {
+    std::vector<SaveStateResEntry> table;
+    auto rm = Ship::Context::GetRawInstance()->GetResourceManager();
+    if (rm == nullptr) {
+        return table;
+    }
+    for (const auto& [path, res] : rm->GetLoadedResourcePointers()) {
+        if (res == nullptr) {
+            continue;
+        }
+        if (path.size() >= sizeof(SaveStateResEntry::name)) {
+            SPDLOG_WARN("[SaveState][B2] resource path too long, skipping: '{}'", path);
+            continue; // can't round-trip the name
+        }
+        void* mainPtr = res->GetRawPointer();
+        const size_t mainSize = res->GetPointerSize();
+        const auto subs = res->GetSubAllocations();
+        const auto addEntry = [&](void* base, size_t size, int32_t subIndex) {
+            if (base == nullptr || size == 0) {
+                return;
+            }
+            SaveStateResEntry e = {};
+            e.oldBase = (uint64_t)(uintptr_t)base;
+            e.oldSize = (uint64_t)size;
+            e.subIndex = subIndex;
+            std::strncpy(e.name, path.c_str(), sizeof(e.name) - 1);
+            table.push_back(e);
+        };
+        if (mainPtr != nullptr && mainSize != 0) {
+            addEntry(mainPtr, mainSize, kResMainPayload);
+        } else {
+            // Null-payload resource (Scene): game code holds the IResource OBJECT pointer directly
+            // (play->sceneSegment, roomCtx.curRoom.segment) and even sig-checks its bytes -- capture it so
+            // that pointer relocates across a restart.
+            addEntry((void*)res.get(), sizeof(void*), kResObjectPtr);
+        }
+        for (size_t i = 0; i < subs.size(); i++) {
+            addEntry(subs[i].first, subs[i].second, (int32_t)i);
+        }
+    }
+    return table;
+}
+
+namespace {
+struct B2Range {
+    uintptr_t oldLo, oldHi;
+    intptr_t delta;
+};
+} // namespace
+
+// B2 load side: relocate captured resource pointers for this run's ASLR. Each saved resource is reloaded by
+// name (LoadResource caches it, keeping the payload alive); every captured heap word inside a resource's old
+// payload range is shifted to the reloaded payload. FAIL-CLOSED: if any resource can't be reloaded at its saved
+// size, refuse the load -- a half-relocated heap is worse than no load. Returns false to abort the load.
+static bool SaveState_RelocateResourcePointers(SaveStateInfo* info, const std::vector<SaveStateResEntry>& table) {
+    if (table.empty()) {
+        return true;
+    }
+    auto rm = Ship::Context::GetRawInstance()->GetResourceManager();
+    if (rm == nullptr) {
+        SPDLOG_ERROR("[SaveState][B2] no resource manager -- refusing load");
+        return false;
+    }
+
+    std::vector<B2Range> ranges;
+    ranges.reserve(table.size());
+    for (const auto& e : table) {
+        if (e.oldBase == 0 || e.oldSize == 0) {
+            continue;
+        }
+        auto res = rm->LoadResource(e.name); // reload (cached) -> keeps the payload + its sub-allocations alive
+        if (res == nullptr) {
+            SPDLOG_ERROR("[SaveState][B2] resource '{}' unavailable -- refusing load", e.name);
+            return false; // fail-closed
+        }
+        void* nb = nullptr;
+        size_t ns = 0;
+        if (e.subIndex == kResObjectPtr) {
+            nb = (void*)res.get(); // the IResource object pointer (null-payload resource, e.g. Scene)
+            ns = sizeof(void*);
+        } else if (e.subIndex < 0) {
+            nb = res->GetRawPointer(); // kResMainPayload
+            ns = res->GetPointerSize();
+        } else {
+            const auto subs = res->GetSubAllocations(); // >= 0 = the i-th sub-allocation
+            if ((size_t)e.subIndex < subs.size()) {
+                nb = subs[e.subIndex].first;
+                ns = subs[e.subIndex].second;
+            }
+        }
+        if (nb == nullptr || ns != e.oldSize) {
+            SPDLOG_ERROR("[SaveState][B2] '{}' block sub={} mismatch (newBase={}, size {} vs saved {}) -- refusing load",
+                         e.name, e.subIndex, nb, (uint64_t)ns, e.oldSize);
+            return false; // fail-closed: a different asset/build, or a sub-allocation that no longer exists
+        }
+        const uintptr_t newBase = (uintptr_t)nb;
+        const intptr_t delta = (intptr_t)(newBase - (uintptr_t)e.oldBase);
+        ranges.push_back({ (uintptr_t)e.oldBase, (uintptr_t)e.oldBase + e.oldSize, delta });
+    }
+
+    // Relocate: sort by old range start, binary-search each 8-byte-aligned heap word.
+    std::sort(ranges.begin(), ranges.end(), [](const B2Range& a, const B2Range& b) { return a.oldLo < b.oldLo; });
+    uintptr_t* p = reinterpret_cast<uintptr_t*>(&info->sysHeapCopy);
+    const size_t n = SYSTEM_HEAP_SIZE / sizeof(uintptr_t);
+
+    // Old resource-heap band: an 8-byte-aligned heap word inside it that no range covers is an unrelocated
+    // resource pointer -- a coverage gap. Counted as a sanity signal; the fail-closed reload above is the real
+    // safety net. (A non-zero count after a game-asset update would flag a new resource type needing
+    // GetSubAllocations.)
+    uintptr_t oldLoBand = UINTPTR_MAX, oldHiBand = 0;
+    for (const auto& r : ranges) {
+        if (r.oldLo < oldLoBand) oldLoBand = r.oldLo;
+        if (r.oldHi > oldHiBand) oldHiBand = r.oldHi;
+    }
+    size_t count = 0, leak = 0;
+    for (size_t i = 0; i < n; i++) {
+        const uintptr_t w = p[i];
+        size_t lo = 0, hi = ranges.size();
+        while (lo < hi) {
+            size_t mid = (lo + hi) / 2;
+            if (ranges[mid].oldLo <= w) {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        if (lo > 0 && w < ranges[lo - 1].oldHi) {
+            p[i] = (uintptr_t)((intptr_t)w + ranges[lo - 1].delta);
+            count++;
+        } else if (w >= oldLoBand && w < oldHiBand && (w & 7u) == 0) {
+            leak++;
+        }
+    }
+    SPDLOG_INFO("[SaveState] relocated {} resource pointers ({} unrelocated in-band)", count, leak);
+    return true;
+}
+
+bool SaveState::WriteToDisk(void) {
+    const std::string path = SaveStateDiskPath(this->slot);
+    std::vector<SaveStateResEntry> resTable = SaveState_CollectResources();
+    FILE* f = fopen(path.c_str(), "wb");
+    if (f == nullptr) {
+        SPDLOG_ERROR("[SaveState] could not open '{}' for write", path);
+        return false;
+    }
+    SaveStateHeader header = {};
+    header.stateMagic = SAVESTATE_DISK_MAGIC;
+    header.stateVersion = SAVESTATE_DISK_VERSION;
+    header.infoSize = (uint64_t)sizeof(SaveStateInfo);
+    header.exeBase = (uint64_t)gExeBase;
+    header.exeSize = gExeSize;
+    header.resCount = (uint32_t)resTable.size();
+    bool ok = (fwrite(&header, sizeof(header), 1, f) == 1) && (fwrite(this->info.get(), sizeof(SaveStateInfo), 1, f) == 1);
+    if (ok && !resTable.empty()) {
+        ok = (fwrite(resTable.data(), sizeof(SaveStateResEntry), resTable.size(), f) == resTable.size());
+    }
+    fclose(f);
+    if (!ok) {
+        SPDLOG_ERROR("[SaveState] write failed for '{}'", path);
+        return false;
+    }
+    SPDLOG_INFO("[SaveState] wrote slot {} -> '{}' ({} bytes + {} resources)", this->slot, path, sizeof(SaveStateInfo),
+                resTable.size());
+    return true;
+}
+
+bool SaveState::ReadFromDisk(void) {
+    const std::string path = SaveStateDiskPath(this->slot);
+    FILE* f = fopen(path.c_str(), "rb");
+    if (f == nullptr) {
+        SPDLOG_ERROR("[SaveState] no disk state at '{}'", path);
+        return false;
+    }
+    SaveStateHeader header = {};
+    bool ok = (fread(&header, sizeof(header), 1, f) == 1);
+    if (ok && header.stateMagic != SAVESTATE_DISK_MAGIC) {
+        SPDLOG_ERROR("[SaveState] '{}' bad magic {:#x}", path, header.stateMagic);
+        ok = false;
+    }
+    if (ok && header.stateVersion != SAVESTATE_DISK_VERSION) {
+        SPDLOG_ERROR("[SaveState] '{}' format version {} != {}", path, header.stateVersion, SAVESTATE_DISK_VERSION);
+        ok = false;
+    }
+    if (ok && header.infoSize != (uint64_t)sizeof(SaveStateInfo)) {
+        SPDLOG_ERROR("[SaveState] '{}' size {} != {} (wrong build)", path, header.infoSize, (uint64_t)sizeof(SaveStateInfo));
+        ok = false;
+    }
+    if (ok) {
+        ok = (fread(this->info.get(), sizeof(SaveStateInfo), 1, f) == 1);
+        if (!ok) {
+            SPDLOG_ERROR("[SaveState] '{}' truncated body", path);
+        }
+    }
+    std::vector<SaveStateResEntry> resTable;
+    if (ok && header.resCount > 0) {
+        resTable.resize(header.resCount);
+        ok = (fread(resTable.data(), sizeof(SaveStateResEntry), header.resCount, f) == header.resCount);
+        if (!ok) {
+            SPDLOG_ERROR("[SaveState] '{}' truncated resource table", path);
+        }
+    }
+    fclose(f);
+    if (ok) {
+        // B1: patch code/function pointers for this run's ASLR before the state gets applied.
+        SaveState_RelocateExePointers(this->info.get(), header.exeBase, header.exeSize, (uint64_t)gExeBase);
+        // B2: reload + relocate resource pointers. Fail-closed -- if a resource can't be reloaded at its saved
+        // size, abort the load rather than apply a heap with dangling resource pointers.
+        if (!SaveState_RelocateResourcePointers(this->info.get(), resTable)) {
+            SPDLOG_ERROR("[SaveState] '{}' resource relocation failed -- not applying", path);
+            return false;
+        }
+        SPDLOG_INFO("[SaveState] read slot {} <- '{}'", this->slot, path);
+    }
+    return ok;
+}
+
 void SaveStateMgr::SetCurrentSlot(unsigned int slot) {
     Ship::Context::GetRawInstance()->GetWindow()->GetGui()->GetGameOverlay()->TextDrawNotification(1.0f, true,
                                                                                                    "slot %u set", slot);
@@ -825,6 +1102,19 @@ void SaveStateMgr::SetCurrentSlot(unsigned int slot) {
 
 unsigned int SaveStateMgr::GetCurrentSlot(void) {
     return this->currentSlot;
+}
+
+// After a cross-restart load we keep this session's live audio, so it's still playing the relaunch scene's music.
+// The savestate restored play->sequenceCtx (the destination scene's BGM/ambience); blank gSaveContext's "currently
+// playing" markers (0xFF matches no real id) so the game's own scene-sequence player switches to the right track.
+static void PlayDestinationSceneAudio(void) {
+    if (gPlayState == nullptr) {
+        return;
+    }
+    constexpr uint8_t kNoSequencePlaying = 0xFF;
+    gSaveContext.seqId = kNoSequencePlaying;
+    gSaveContext.natureAmbienceId = kNoSequencePlaying;
+    Environment_PlaySceneSequence(gPlayState);
 }
 
 void SaveStateMgr::ProcessSaveStateRequests(void) {
@@ -850,6 +1140,32 @@ void SaveStateMgr::ProcessSaveStateRequests(void) {
                     SPDLOG_ERROR("Invalid SaveState slot: {}", request.slot);
                 }
                 break;
+            case RequestType::SAVE_TO_DISK:
+                if (!this->states.contains(request.slot)) {
+                    this->states[request.slot] =
+                        std::make_shared<SaveState>(OTRGlobals::Instance->gSaveStateMgr, request.slot);
+                }
+                this->states[request.slot]->Save(); // capture live state into info, then serialize it
+                Ship::Context::GetRawInstance()->GetWindow()->GetGui()->GetGameOverlay()->TextDrawNotification(
+                    1.0f, true, this->states[request.slot]->WriteToDisk() ? "saved state %u to disk"
+                                                                          : "disk save %u FAILED",
+                    request.slot);
+                break;
+            case RequestType::LOAD_FROM_DISK:
+                if (!this->states.contains(request.slot)) {
+                    this->states[request.slot] =
+                        std::make_shared<SaveState>(OTRGlobals::Instance->gSaveStateMgr, request.slot);
+                }
+                if (this->states[request.slot]->ReadFromDisk()) {
+                    this->states[request.slot]->Load(/*crossRestart=*/true); // keep live audio (saved tables stale)
+                    PlayDestinationSceneAudio();                              // then switch to the destination's BGM
+                    Ship::Context::GetRawInstance()->GetWindow()->GetGui()->GetGameOverlay()->TextDrawNotification(
+                        1.0f, true, "loaded state %u from disk", request.slot);
+                } else {
+                    Ship::Context::GetRawInstance()->GetWindow()->GetGui()->GetGameOverlay()->TextDrawNotification(
+                        1.0f, true, "disk load %u FAILED", request.slot);
+                }
+                break;
                 [[unlikely]] default
                     : SPDLOG_ERROR("Invalid SaveState request type: Unknown ({})", static_cast<int>(request.type));
                 break;
@@ -868,6 +1184,13 @@ SaveStateReturn SaveStateMgr::AddRequest(const SaveStateRequest request) {
 
     switch (request.type) {
         case RequestType::SAVE:
+            requests.push(request);
+            return SaveStateReturn::SUCCESS;
+        case RequestType::SAVE_TO_DISK:
+            requests.push(request);
+            return SaveStateReturn::SUCCESS;
+        case RequestType::LOAD_FROM_DISK:
+            // Allowed even when the slot isn't in memory -- it loads the state from the file.
             requests.push(request);
             return SaveStateReturn::SUCCESS;
         case RequestType::LOAD:
@@ -921,14 +1244,17 @@ void SaveState::Save(void) {
     SaveMiscCodeData();
 }
 
-void SaveState::Load(void) {
+void SaveState::Load(bool crossRestart) {
     std::unique_lock<std::mutex> Lock(audio.mutex);
     memcpy(gSystemHeap, &info->sysHeapCopy, SYSTEM_HEAP_SIZE);
-    memcpy(gAudioHeap, &info->audioHeapCopy, AUDIO_HEAP_SIZE);
-
-    memcpy(&gAudioContext, &info->audioContextCopy, sizeof(AudioContext));
-    memcpy(gActiveSeqs, &info->gActiveSeqsCopy, sizeof(info->gActiveSeqsCopy));
-    LoadSeqScriptState();
+    if (!crossRestart) {
+        // In-session load: restore the saved audio (its pointers are still valid this session).
+        memcpy(gAudioHeap, &info->audioHeapCopy, AUDIO_HEAP_SIZE);
+        memcpy(&gAudioContext, &info->audioContextCopy, sizeof(AudioContext));
+        memcpy(gActiveSeqs, &info->gActiveSeqsCopy, sizeof(info->gActiveSeqsCopy));
+        LoadSeqScriptState();
+    }
+    // else cross-restart: keep this session's live audio (the saved audio's resource tables are stale).
 
     memcpy(&gSaveContext, &info->saveContextCopy, sizeof(gSaveContext));
     memcpy(gGameInfo, &info->gameInfoCopy, sizeof(*gGameInfo));

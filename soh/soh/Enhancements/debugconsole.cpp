@@ -571,6 +571,40 @@ static bool LoadStateHandler(std::shared_ptr<Ship::Console> Console, const std::
     }
 }
 
+static bool SaveStateToDiskHandler(std::shared_ptr<Ship::Console> Console, const std::vector<std::string>& args,
+                                   std::string* output) {
+    unsigned int slot = OTRGlobals::Instance->gSaveStateMgr->GetCurrentSlot();
+    const SaveStateReturn rtn = OTRGlobals::Instance->gSaveStateMgr->AddRequest({ slot, RequestType::SAVE_TO_DISK });
+
+    switch (rtn) {
+        case SaveStateReturn::SUCCESS:
+            INFO_MESSAGE("[SOH] Saving state to disk, slot %u", slot);
+            return 0;
+        case SaveStateReturn::FAIL_WRONG_GAMESTATE:
+            ERROR_MESSAGE("[SOH] Can not save a state outside of \"GamePlay\"");
+            return 1;
+        default:
+            return 1;
+    }
+}
+
+static bool LoadStateFromDiskHandler(std::shared_ptr<Ship::Console> Console, const std::vector<std::string>& args,
+                                     std::string* output) {
+    unsigned int slot = OTRGlobals::Instance->gSaveStateMgr->GetCurrentSlot();
+    const SaveStateReturn rtn = OTRGlobals::Instance->gSaveStateMgr->AddRequest({ slot, RequestType::LOAD_FROM_DISK });
+
+    switch (rtn) {
+        case SaveStateReturn::SUCCESS:
+            INFO_MESSAGE("[SOH] Loading state from disk, slot %u", slot);
+            return 0;
+        case SaveStateReturn::FAIL_WRONG_GAMESTATE:
+            ERROR_MESSAGE("[SOH] Can not load a state outside of \"GamePlay\"");
+            return 1;
+        default:
+            return 1;
+    }
+}
+
 static bool StateSlotSelectHandler(std::shared_ptr<Ship::Console> Console, const std::vector<std::string>& args,
                                    std::string* output) {
     if (args.size() < 2) {
@@ -1519,6 +1553,8 @@ void DebugConsole_Init(void) {
     // Save States
     CMD_REGISTER("save_state", { SaveStateHandler, "Save a state." });
     CMD_REGISTER("load_state", { LoadStateHandler, "Load a state." });
+    CMD_REGISTER("save_state_to_disk", { SaveStateToDiskHandler, "Save a state to disk (persists across restarts)." });
+    CMD_REGISTER("load_state_from_disk", { LoadStateFromDiskHandler, "Load a state from disk." });
     CMD_REGISTER("set_slot", { StateSlotSelectHandler,
                                "Selects a SaveState slot",
                                {

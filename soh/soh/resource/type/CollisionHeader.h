@@ -75,6 +75,7 @@ class CollisionHeader : public Ship::Resource<CollisionHeaderData> {
 
     CollisionHeaderData* GetPointer();
     size_t GetPointerSize();
+    std::vector<std::pair<void*, size_t>> GetSubAllocations() override;
 
     CollisionHeaderData collisionHeaderData;
 

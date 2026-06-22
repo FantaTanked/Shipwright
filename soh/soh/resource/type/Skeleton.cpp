@@ -36,6 +36,34 @@ size_t Skeleton::GetPointerSize() {
     }
 }
 
+// The limb-pointer array (`segment`) lives in a separate allocation from the SkeletonData header, and game code
+// caches it directly as SkelAnime::skeleton. Report it so the cross-session savestate layer relocates that
+// pointer across a restart. The array holds `limbCount` host pointers.
+std::vector<std::pair<void*, size_t>> Skeleton::GetSubAllocations() {
+    void** segment = nullptr;
+    size_t count = 0;
+    switch (type) {
+        case SkeletonType::Normal:
+            segment = skeletonData.skeletonHeader.segment;
+            count = skeletonData.skeletonHeader.limbCount;
+            break;
+        case SkeletonType::Flex:
+            segment = skeletonData.flexSkeletonHeader.sh.segment;
+            count = skeletonData.flexSkeletonHeader.sh.limbCount;
+            break;
+        case SkeletonType::Curve:
+            segment = (void**)skeletonData.skelCurveLimbList.limbs;
+            count = skeletonData.skelCurveLimbList.limbCount;
+            break;
+        default:
+            break;
+    }
+    if (segment == nullptr || count == 0) {
+        return {};
+    }
+    return { { (void*)segment, count * sizeof(void*) } };
+}
+
 std::vector<SkeletonPatchInfo> SkeletonPatcher::skeletons;
 
 bool SkeletonPatcher::IsLinkSkeletonPath(const std::string& path) {

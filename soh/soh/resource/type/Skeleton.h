@@ -59,6 +59,7 @@ class Skeleton : public Ship::Resource<SkeletonData> {
 
     SkeletonData* GetPointer();
     size_t GetPointerSize();
+    std::vector<std::pair<void*, size_t>> GetSubAllocations() override;
 
     SkeletonType type;
     SkeletonData skeletonData;

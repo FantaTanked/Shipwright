@@ -19,12 +19,30 @@ enum class SaveStateReturn {
 typedef struct SaveStateHeader {
     uint32_t stateMagic;
     uint32_t stateVersion;
+    uint64_t infoSize; // sizeof(SaveStateInfo) sentinel; rejects struct-layout drift across builds
+    uint64_t exeBase;  // soh.exe image base at save time; the load-time delta relocates code/function pointers
+    uint32_t exeSize;  // soh.exe image size at save time (the relocatable range)
+    uint32_t resCount; // number of SaveStateResEntry records appended after the info blob (B2 relocation table)
     // uint32_t gameVersion;
 } SaveStateHeader;
+
+// One relocatable block at save time: a loaded resource's main payload, or one of its sub-allocations. On load
+// the resource is reloaded by `name`; `subIndex == -1` resolves to its main payload (GetRawPointer), `subIndex
+// >= 0` to the i-th entry of GetSubAllocations() (e.g. a skeleton's limb array). Captured pointers in
+// [oldBase, oldBase+oldSize) relocate by (newBase - oldBase). Fixed-size record => a trivial on-disk array.
+typedef struct SaveStateResEntry {
+    uint64_t oldBase;  // host VA of this block at save time
+    uint64_t oldSize;  // byte size of this block at save time
+    int32_t subIndex;  // -1 = main payload; >= 0 = the i-th GetSubAllocations() block
+    uint32_t pad;      // keep 8-byte alignment
+    char name[256];    // OTR virtual path, NUL-terminated
+} SaveStateResEntry;
 
 enum class RequestType {
     SAVE,
     LOAD,
+    SAVE_TO_DISK,
+    LOAD_FROM_DISK,
 };
 
 typedef struct SaveStateRequest {

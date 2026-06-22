@@ -18,6 +18,7 @@ class Scene : public Ship::Resource<void> {
 
     void* GetPointer();
     size_t GetPointerSize();
+    std::vector<std::pair<void*, size_t>> GetSubAllocations() override;
 
     std::vector<std::shared_ptr<ISceneCommand>> commands;
 };

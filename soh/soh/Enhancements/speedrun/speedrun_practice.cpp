@@ -102,6 +102,7 @@ struct SpeedrunImportFile {
 // atomic; the import file list is guarded by a mutex (it's resized on the game thread
 // while the draw thread iterates it).
 static std::atomic<bool> sMenuOpen{ false };
+static std::atomic<bool> sPaused{ false }; // game frozen via the native FrameAdvance gate (drives the pause icon)
 static std::atomic<int> sScreen{ SPEEDRUN_SCREEN_ROOT };
 static std::atomic<int> sMenuSel{ 0 };
 static std::atomic<int> sImportSel{ 0 };
@@ -596,7 +597,7 @@ static void OnGameStateMainStartSpeedrunMode() {
     // Keep the overlay shown while the menu is open OR any watch is active (watches draw
     // on screen during play). Otherwise hide it to avoid a stray borderless window.
     if (sOverlay != nullptr) {
-        const bool want = sMenuOpen.load() || SpeedrunWatch_Count() > 0;
+        const bool want = sMenuOpen.load() || SpeedrunWatch_Count() > 0 || sPaused.load();
         if (sOverlay->IsVisible() != want) {
             if (want) {
                 sOverlay->Show();
@@ -609,6 +610,12 @@ static void OnGameStateMainStartSpeedrunMode() {
     Input* input = &gPlayState->state.input[0];
     const bool rHeld = CHECK_BTN_ALL(input->cur.button, BTN_R);
     const bool cDownPressed = CHECK_BTN_ALL(input->press.button, BTN_CDOWN);
+
+    // Drive SoH's native FrameAdvance gate from our own sPaused flag every frame. sPaused lives only in this
+    // overlay -- it is NOT captured by the savestate (PlayState.frameAdvCtx IS) -- so the freeze state stays
+    // independent of save/load: saving while paused then loading later won't restore the pause, and a live pause
+    // is unaffected by a load.
+    gPlayState->frameAdvCtx.enabled = sPaused.load() ? 1 : 0;
 
     if (!sMenuOpen.load()) {
         // R + C-Down opens the menu, returning to whatever screen/selection was active
@@ -623,6 +630,17 @@ static void OnGameStateMainStartSpeedrunMode() {
             OTRGlobals::Instance->gSaveStateMgr->AddRequest({ SpeedrunCurrentSlot(), RequestType::SAVE });
         } else if (CHECK_BTN_ALL(input->press.button, BTN_DRIGHT)) {
             OTRGlobals::Instance->gSaveStateMgr->AddRequest({ SpeedrunCurrentSlot(), RequestType::LOAD });
+        } else if (CHECK_BTN_ALL(input->press.button, BTN_DUP)) {
+            // Frame advance: first press freezes on the current frame; each further press steps one frame. The
+            // tick CVar self-clears after one frame (z_frame_advance.c); the freeze itself is driven above from
+            // sPaused (so a tick lands the same frame, since this hook runs before Play_Update).
+            if (sPaused.load()) {
+                CVarSetInteger(CVAR_DEVELOPER_TOOLS("FrameAdvanceTick"), 1); // step exactly one frame
+            } else {
+                sPaused.store(true); // freeze
+            }
+        } else if (CHECK_BTN_ALL(input->press.button, BTN_DDOWN)) {
+            sPaused.store(false); // resume
         }
         return;
     }
@@ -686,6 +704,24 @@ class SpeedrunMenuOverlay final : public Ship::GuiWindow {
 
         // Active watches draw on screen whether or not the menu is open.
         DrawWatches(overlay);
+
+        // Frame-advance pause indicator: two bars on a dark backdrop, top-centre, shown whenever the game is
+        // frozen -- so you can see the pause is active even with the menu closed.
+        if (sPaused.load()) {
+            ImDrawList* dl = ImGui::GetForegroundDrawList();
+            const float cx = vp->Pos.x + vp->Size.x * 0.5f;
+            const float cy = vp->Pos.y + vp->Size.y * 0.065f;
+            const float h = vp->Size.y * 0.04f; // bar height
+            const float w = h * 0.34f;          // bar width
+            const float gap = w * 0.8f;         // gap between the two bars
+            const float pad = h * 0.45f;
+            dl->AddRectFilled(ImVec2(cx - gap * 0.5f - w - pad, cy - h * 0.5f - pad),
+                              ImVec2(cx + gap * 0.5f + w + pad, cy + h * 0.5f + pad), IM_COL32(0, 0, 0, 130),
+                              h * 0.3f);
+            const ImU32 bar = IM_COL32(255, 255, 255, 235);
+            dl->AddRectFilled(ImVec2(cx - gap * 0.5f - w, cy - h * 0.5f), ImVec2(cx - gap * 0.5f, cy + h * 0.5f), bar);
+            dl->AddRectFilled(ImVec2(cx + gap * 0.5f, cy - h * 0.5f), ImVec2(cx + gap * 0.5f + w, cy + h * 0.5f), bar);
+        }
 
         if (sMenuOpen.load()) {
             if (sScreen.load() == SPEEDRUN_SCREEN_IMPORT) {

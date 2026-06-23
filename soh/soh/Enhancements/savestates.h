@@ -6,6 +6,7 @@
 #include <unordered_map>
 #include <memory>
 #include <mutex>
+#include <string>
 
 enum class SaveStateReturn {
     SUCCESS,
@@ -22,8 +23,11 @@ typedef struct SaveStateHeader {
     uint64_t infoSize; // sizeof(SaveStateInfo) sentinel; rejects struct-layout drift across builds
     uint64_t exeBase;  // soh.exe image base at save time; the load-time delta relocates code/function pointers
     uint32_t exeSize;  // soh.exe image size at save time (the relocatable range)
-    uint32_t resCount; // number of SaveStateResEntry records appended after the info blob (B2 relocation table)
-    // uint32_t gameVersion;
+    uint32_t resCount; // number of SaveStateResEntry records that make up the relocation table
+    uint32_t compression;          // body codec: 0 = stored raw, 1 = zlib (StormLib SComp). Added in disk v6.
+    uint32_t pad;                  // alignment for the u64s below
+    uint64_t bodyUncompressedSize; // = sizeof(SaveStateInfo) + resCount*sizeof(SaveStateResEntry)
+    uint64_t bodyCompressedSize;   // bytes of the body region on disk (== bodyUncompressedSize when stored raw)
 } SaveStateHeader;
 
 // One relocatable block at save time: a loaded resource's main payload, or one of its sub-allocations. On load
@@ -48,6 +52,7 @@ enum class RequestType {
 typedef struct SaveStateRequest {
     unsigned int slot;
     RequestType type;
+    std::string path; // SAVE_TO_DISK/LOAD_FROM_DISK only: an explicit export/import file; empty => the per-slot file
 } SaveStateRequest;
 
 class SaveState;
@@ -68,6 +73,13 @@ class SaveStateMgr {
 
     void SetCurrentSlot(unsigned int slot);
     unsigned int GetCurrentSlot(void);
+
+    // Speedrun practice menu: export/import a slot to/from an arbitrary file. Routed through the same
+    // cross-restart disk path (pointer relocation) as SAVE_TO_DISK/LOAD_FROM_DISK, so an imported state is
+    // ASLR-relocated on load exactly like a per-slot disk state. Both enqueue a request (run on the graph thread).
+    static std::string GetStateDirectory(void);
+    SaveStateReturn ExportState(unsigned int slot, const std::string& path);
+    SaveStateReturn ImportState(unsigned int slot, const std::string& path);
 
     SaveStateMgr& operator=(const SaveStateMgr& rhs) = delete;
     SaveStateMgr(const SaveStateMgr& rhs) = delete;

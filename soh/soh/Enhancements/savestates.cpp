@@ -12,6 +12,7 @@
 #include <variables.h>
 #include <functions.h>
 #include "z64map_mark.h"
+#include "soh/Enhancements/savestate_compress.h"
 #include "../../src/overlays/actors/ovl_Boss_Ganon/z_boss_ganon.h"
 #include "../../src/overlays/actors/ovl_Boss_Ganon2/z_boss_ganon2.h"
 #include "../../src/overlays/actors/ovl_Boss_Tw/z_boss_tw.h"
@@ -35,7 +36,7 @@ extern "C" uint32_t gExeSize;  // soh.exe image size (main.c)
 // Magic + format version for on-disk savestate files (cross-session persistence). Bump the version whenever
 // the on-disk layout changes (e.g. when the relocation metadata is added) so older files are cleanly rejected.
 #define SAVESTATE_DISK_MAGIC 0x53534F48u // "SSOH"
-#define SAVESTATE_DISK_VERSION 5u        // v5: resource table = main + typed sub-allocations (GetSubAllocations)
+#define SAVESTATE_DISK_VERSION 6u        // v6: body (info blob + relocation table) is zlib-compressed
 
 // FROM z_lights.c
 // I didn't feel like moving it into a header file.
@@ -371,8 +372,8 @@ class SaveState {
     // Cross-session persistence: serialize/restore the captured `info` blob to a per-slot file. POD blob, so
     // a single fwrite/fread is valid; a header guards magic/version/size so a stale or wrong-build file is
     // rejected, never applied.
-    bool WriteToDisk(void);
-    bool ReadFromDisk(void);
+    bool WriteToDisk(const std::string& path = ""); // path empty => the per-slot file
+    bool ReadFromDisk(const std::string& path = "");
 
     SaveStateInfo* GetSaveStateInfo(void);
 };
@@ -844,7 +845,7 @@ static std::string SaveStateDiskPath(unsigned int slot) {
     std::string dir = Ship::Context::GetPathRelativeToAppDirectory("savestates");
     std::error_code ec;
     std::filesystem::create_directories(dir, ec);
-    return dir + "/slot" + std::to_string(slot) + ".savestate";
+    return dir + "/slot" + std::to_string(slot) + ".st";
 }
 
 // Code-pointer relocation: fix up captured pointers into the soh.exe image after a restart. ASLR shifts the
@@ -1016,14 +1017,25 @@ static bool SaveState_RelocateResourcePointers(SaveStateInfo* info, const std::v
     return true;
 }
 
-bool SaveState::WriteToDisk(void) {
-    const std::string path = SaveStateDiskPath(this->slot);
+bool SaveState::WriteToDisk(const std::string& explicitPath) {
+    const std::string path = explicitPath.empty() ? SaveStateDiskPath(this->slot) : explicitPath;
     std::vector<SaveStateResEntry> resTable = SaveState_CollectResources();
-    FILE* f = fopen(path.c_str(), "wb");
-    if (f == nullptr) {
-        SPDLOG_ERROR("[SaveState] could not open '{}' for write", path);
-        return false;
+
+    // Serialize the body -- the info blob followed by the relocation table -- contiguously, then zlib-compress
+    // it. The body is ~8.5 MiB but roughly half zeros, so it shrinks to ~1-2%. The header stays uncompressed so
+    // its magic/version/infoSize can be validated up front on load. Pointer relocation happens later, on the
+    // decompressed in-memory blob, so it is unaffected by compression.
+    const size_t infoBytes = sizeof(SaveStateInfo);
+    const size_t tableBytes = resTable.size() * sizeof(SaveStateResEntry);
+    std::vector<uint8_t> body(infoBytes + tableBytes);
+    memcpy(body.data(), this->info.get(), infoBytes);
+    if (tableBytes != 0) {
+        memcpy(body.data() + infoBytes, resTable.data(), tableBytes);
     }
+    std::vector<uint8_t> compressed = SaveStateCompress::Compress(body.data(), body.size());
+    const bool useCompression = !compressed.empty();
+    const std::vector<uint8_t>& payload = useCompression ? compressed : body;
+
     SaveStateHeader header = {};
     header.stateMagic = SAVESTATE_DISK_MAGIC;
     header.stateVersion = SAVESTATE_DISK_VERSION;
@@ -1031,22 +1043,29 @@ bool SaveState::WriteToDisk(void) {
     header.exeBase = (uint64_t)gExeBase;
     header.exeSize = gExeSize;
     header.resCount = (uint32_t)resTable.size();
-    bool ok = (fwrite(&header, sizeof(header), 1, f) == 1) && (fwrite(this->info.get(), sizeof(SaveStateInfo), 1, f) == 1);
-    if (ok && !resTable.empty()) {
-        ok = (fwrite(resTable.data(), sizeof(SaveStateResEntry), resTable.size(), f) == resTable.size());
+    header.compression = useCompression ? 1u : 0u;
+    header.bodyUncompressedSize = (uint64_t)body.size();
+    header.bodyCompressedSize = (uint64_t)payload.size();
+
+    FILE* f = fopen(path.c_str(), "wb");
+    if (f == nullptr) {
+        SPDLOG_ERROR("[SaveState] could not open '{}' for write", path);
+        return false;
     }
+    const bool ok = (fwrite(&header, sizeof(header), 1, f) == 1) &&
+                    (fwrite(payload.data(), 1, payload.size(), f) == payload.size());
     fclose(f);
     if (!ok) {
         SPDLOG_ERROR("[SaveState] write failed for '{}'", path);
         return false;
     }
-    SPDLOG_INFO("[SaveState] wrote slot {} -> '{}' ({} bytes + {} resources)", this->slot, path, sizeof(SaveStateInfo),
-                resTable.size());
+    SPDLOG_INFO("[SaveState] wrote slot {} -> '{}' ({} -> {} bytes, {})", this->slot, path, body.size(),
+                payload.size(), useCompression ? "zlib" : "raw");
     return true;
 }
 
-bool SaveState::ReadFromDisk(void) {
-    const std::string path = SaveStateDiskPath(this->slot);
+bool SaveState::ReadFromDisk(const std::string& explicitPath) {
+    const std::string path = explicitPath.empty() ? SaveStateDiskPath(this->slot) : explicitPath;
     FILE* f = fopen(path.c_str(), "rb");
     if (f == nullptr) {
         SPDLOG_ERROR("[SaveState] no disk state at '{}'", path);
@@ -1066,18 +1085,48 @@ bool SaveState::ReadFromDisk(void) {
         SPDLOG_ERROR("[SaveState] '{}' size {} != {} (wrong build)", path, header.infoSize, (uint64_t)sizeof(SaveStateInfo));
         ok = false;
     }
-    if (ok) {
-        ok = (fread(this->info.get(), sizeof(SaveStateInfo), 1, f) == 1);
-        if (!ok) {
-            SPDLOG_ERROR("[SaveState] '{}' truncated body", path);
-        }
-    }
     std::vector<SaveStateResEntry> resTable;
-    if (ok && header.resCount > 0) {
-        resTable.resize(header.resCount);
-        ok = (fread(resTable.data(), sizeof(SaveStateResEntry), header.resCount, f) == header.resCount);
-        if (!ok) {
-            SPDLOG_ERROR("[SaveState] '{}' truncated resource table", path);
+    if (ok) {
+        // Read the (compressed) body, decompress it, and split it back into the info blob + relocation table.
+        const size_t infoBytes = sizeof(SaveStateInfo);
+        const size_t tableBytes = (size_t)header.resCount * sizeof(SaveStateResEntry);
+        const size_t bodyBytes = infoBytes + tableBytes;
+        if (header.bodyUncompressedSize != (uint64_t)bodyBytes) {
+            SPDLOG_ERROR("[SaveState] '{}' body size {} != expected {}", path, header.bodyUncompressedSize, bodyBytes);
+            ok = false;
+        }
+
+        std::vector<uint8_t> payload;
+        if (ok) {
+            payload.resize((size_t)header.bodyCompressedSize);
+            ok = (fread(payload.data(), 1, payload.size(), f) == payload.size());
+            if (!ok) {
+                SPDLOG_ERROR("[SaveState] '{}' truncated body", path);
+            }
+        }
+
+        std::vector<uint8_t> body;
+        if (ok) {
+            if (header.compression == 1u) {
+                body.resize(bodyBytes);
+                if (!SaveStateCompress::Decompress(payload.data(), payload.size(), body.data(), body.size())) {
+                    SPDLOG_ERROR("[SaveState] '{}' decompression failed", path);
+                    ok = false;
+                }
+            } else if (payload.size() == bodyBytes) {
+                body = std::move(payload); // stored raw
+            } else {
+                SPDLOG_ERROR("[SaveState] '{}' raw body size mismatch", path);
+                ok = false;
+            }
+        }
+
+        if (ok) {
+            memcpy(this->info.get(), body.data(), infoBytes);
+            if (tableBytes != 0) {
+                resTable.resize(header.resCount);
+                memcpy(resTable.data(), body.data() + infoBytes, tableBytes);
+            }
         }
     }
     fclose(f);
@@ -1103,6 +1152,30 @@ void SaveStateMgr::SetCurrentSlot(unsigned int slot) {
 
 unsigned int SaveStateMgr::GetCurrentSlot(void) {
     return this->currentSlot;
+}
+
+// The folder savestate files live in (also creates it). Used by the practice menu's export/import dialogs.
+std::string SaveStateMgr::GetStateDirectory(void) {
+    const std::string dir = Ship::Context::GetPathRelativeToAppDirectory("savestates");
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    return dir;
+}
+
+// Export: capture the live state and serialize it to `path` (reuses the SAVE_TO_DISK pipeline).
+SaveStateReturn SaveStateMgr::ExportState(unsigned int slot, const std::string& path) {
+    if (path.empty()) {
+        return SaveStateReturn::FAIL_BAD_REQUEST;
+    }
+    return AddRequest({ slot, RequestType::SAVE_TO_DISK, path });
+}
+
+// Import: read `path`, relocate its pointers for this run, and apply it (reuses the LOAD_FROM_DISK pipeline).
+SaveStateReturn SaveStateMgr::ImportState(unsigned int slot, const std::string& path) {
+    if (path.empty()) {
+        return SaveStateReturn::FAIL_BAD_REQUEST;
+    }
+    return AddRequest({ slot, RequestType::LOAD_FROM_DISK, path });
 }
 
 // After a cross-restart load we keep this session's live audio, so it's still playing the relaunch scene's music.
@@ -1148,7 +1221,7 @@ void SaveStateMgr::ProcessSaveStateRequests(void) {
                 }
                 this->states[request.slot]->Save(); // capture live state into info, then serialize it
                 Ship::Context::GetRawInstance()->GetWindow()->GetGui()->GetGameOverlay()->TextDrawNotification(
-                    1.0f, true, this->states[request.slot]->WriteToDisk() ? "saved state %u to disk"
+                    1.0f, true, this->states[request.slot]->WriteToDisk(request.path) ? "saved state %u to disk"
                                                                           : "disk save %u FAILED",
                     request.slot);
                 break;
@@ -1157,7 +1230,7 @@ void SaveStateMgr::ProcessSaveStateRequests(void) {
                     this->states[request.slot] =
                         std::make_shared<SaveState>(OTRGlobals::Instance->gSaveStateMgr, request.slot);
                 }
-                if (this->states[request.slot]->ReadFromDisk()) {
+                if (this->states[request.slot]->ReadFromDisk(request.path)) {
                     this->states[request.slot]->Load(/*crossRestart=*/true); // keep live audio (saved tables stale)
                     PlayDestinationSceneAudio();                              // then switch to the destination's BGM
                     Ship::Context::GetRawInstance()->GetWindow()->GetGui()->GetGameOverlay()->TextDrawNotification(

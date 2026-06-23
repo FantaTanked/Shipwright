@@ -1884,6 +1884,14 @@ void SohMenu::AddMenuEnhancements() {
         .PreFunc([](WidgetInfo& info) { info.isHidden = CVarGetInteger(CVAR_CHEAT("SaveStatePromise"), 0) == 0; })
         .CVar(CVAR_CHEAT("SaveStatesEnabled"))
         .Options(CheckboxOptions().Tooltip("F5 to save, F6 to change slots, F7 to load"));
+    AddWidget(path, "Speedrun mode (controller savestates)", WIDGET_CVAR_CHECKBOX)
+        .PreFunc([](WidgetInfo& info) {
+            info.isHidden = CVarGetInteger(CVAR_CHEAT("SaveStatePromise"), 0) == 0 ||
+                            CVarGetInteger(CVAR_CHEAT("SaveStatesEnabled"), 0) == 0;
+        })
+        .CVar(CVAR_CHEAT("SpeedrunMode"))
+        .Options(CheckboxOptions().Tooltip("Speedrun practice overlay: drive savestates and warps with the "
+                                           "controller. D-pad navigates; C-Down confirms."));
 
     AddWidget(path, "Beta Quest", WIDGET_SEPARATOR_TEXT);
     AddWidget(path, "Enable Beta Quest", WIDGET_CVAR_CHECKBOX)

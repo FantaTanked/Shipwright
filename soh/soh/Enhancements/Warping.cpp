@@ -1,4 +1,5 @@
 #include <libultraship/bridge.h>
+#include "soh/Enhancements/Warping.h"
 #include "soh/Enhancements/game-interactor/GameInteractor.h"
 #include "soh/Enhancements/game-interactor/GameInteractor_Hooks.h"
 #include "soh/ShipInit.hpp"
@@ -12,6 +13,13 @@ extern "C" {
 #include "soh/Enhancements/enhancementTypes.h"
 void Sram_InitDebugSave(void);
 void Select_LoadGame(SelectContext* selectContext, s32 entranceIndex);
+// speedrun: curated scene list accessors (see z_select.c).
+s32 SceneSelect_GetSceneCount(void);
+const char* SceneSelect_GetSceneName(s32 index);
+s32 SceneSelect_GetSceneEntrance(s32 index);
+s32 SceneSelect_GetEntranceCount(s32 scene);
+const char* SceneSelect_GetEntranceName(s32 scene, s32 entrance);
+s32 SceneSelect_GetEntranceIndexAt(s32 scene, s32 entrance);
 }
 
 #define CVAR_BOOTSEQUENCE_NAME CVAR_SETTING("BootSequence")
@@ -94,6 +102,196 @@ void Warp(WarpPoint& warpPoint) {
         *should = false;
         GameInteractor::Instance->UnregisterGameHookForID<GameInteractor::OnVanillaBehavior>(hookId);
     });
+}
+
+// Plain entrance warp: spawn at the entrance's default position (unlike Warp(), which
+// uses a saved respawn position). Used by the speedrun default-warps list.
+void WarpToEntrance(s32 entranceIndex) {
+    if (gPlayState == NULL || entranceIndex < 0) {
+        return;
+    }
+    gPlayState->nextEntranceIndex = entranceIndex;
+    gPlayState->transitionTrigger = TRANS_TRIGGER_START;
+    gPlayState->transitionType = TRANS_TYPE_FADE_BLACK;
+    gSaveContext.nextTransitionType = TRANS_TYPE_FADE_BLACK;
+}
+
+std::vector<std::string> GetDefaultWarpNames() {
+    std::vector<std::string> names;
+    const s32 count = SceneSelect_GetSceneCount();
+    names.reserve(count);
+    for (s32 i = 0; i < count; i++) {
+        names.push_back(SceneSelect_GetSceneName(i));
+    }
+    return names;
+}
+
+bool WarpToDefaultIndex(size_t index) {
+    if ((s32)index >= SceneSelect_GetSceneCount()) {
+        return false;
+    }
+    WarpToEntrance(SceneSelect_GetSceneEntrance((s32)index));
+    return true;
+}
+
+// ---------------------------------------------------------------------------------------
+// speedrun-style hierarchical warp browser (category -> place -> entrance).
+//
+// Scene indices below are 0-based into the curated sBetterScenes table (z_select.c); they
+// equal the table's "N:" number minus one. Grottos (47-49) use a different loader and the
+// debug scene (50) can crash, so both are intentionally excluded.
+// ---------------------------------------------------------------------------------------
+
+namespace {
+
+// A boss-room target for the flat "Bosses" category: the scene plus the index of the
+// boss-room entry within that scene's entrancePairs[].
+struct SpeedrunBoss {
+    const char* name;
+    s32 scene;
+    s32 entrance;
+};
+
+struct SpeedrunCategory {
+    const char* name;
+    bool flat;             // true: places are the warp leaves (no entrance level)
+    const s32* scenes;     // non-flat: scene indices that make up this category
+    int sceneCount;
+    const SpeedrunBoss* bosses;  // flat: the boss targets
+    int bossCount;
+};
+
+// Non-flat category membership (scene indices). See the §3 table in SPEEDRUN_WARPS_HANDOVER.md.
+const s32 kDungeonScenes[] = { 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42 };
+const s32 kTownScenes[] = { 6, 7, 14, 19, 22 };
+const s32 kHouseScenes[] = { 2, 8, 13, 15, 25 };
+const s32 kShopScenes[] = { 44 };
+const s32 kOverworldScenes[] = { 0, 1, 3, 4, 5, 10, 11, 12, 16, 18, 20, 21, 23, 24, 26, 27, 29, 30 };
+const s32 kMiscScenes[] = { 9, 17, 28, 43, 45 };
+
+// Flat "Bosses" category: the boss-room entrance pulled out of each dungeon. The entrance
+// index is the position within that scene's entrancePairs[] (see z_select.c).
+const SpeedrunBoss kBosses[] = {
+    { "Gohma", 31, 2 },         { "King Dodongo", 32, 2 },  { "Barinade", 33, 1 },
+    { "Phantom Ganon", 34, 3 }, { "Volvagia", 35, 2 },      { "Morpha", 36, 1 },
+    { "Bongo Bongo", 37, 2 },   { "Twinrova", 38, 5 },      { "Ganondorf", 39, 4 },
+    { "Ganon", 39, 7 },
+};
+
+#define SPEEDRUN_SCENES(arr) (arr), (int)(sizeof(arr) / sizeof((arr)[0]))
+
+const SpeedrunCategory kCategories[] = {
+    { "dungeons", false, SPEEDRUN_SCENES(kDungeonScenes), nullptr, 0 },
+    { "bosses", true, nullptr, 0, kBosses, (int)(sizeof(kBosses) / sizeof(kBosses[0])) },
+    { "towns", false, SPEEDRUN_SCENES(kTownScenes), nullptr, 0 },
+    { "houses", false, SPEEDRUN_SCENES(kHouseScenes), nullptr, 0 },
+    { "shops", false, SPEEDRUN_SCENES(kShopScenes), nullptr, 0 },
+    { "overworld", false, SPEEDRUN_SCENES(kOverworldScenes), nullptr, 0 },
+    { "misc", false, SPEEDRUN_SCENES(kMiscScenes), nullptr, 0 },
+};
+
+#undef SPEEDRUN_SCENES
+
+const int kCategoryCount = (int)(sizeof(kCategories) / sizeof(kCategories[0]));
+
+const SpeedrunCategory* SpeedrunCat(int cat) {
+    return (cat >= 0 && cat < kCategoryCount) ? &kCategories[cat] : nullptr;
+}
+
+} // namespace
+
+int SpeedrunWarp_CategoryCount() {
+    return kCategoryCount;
+}
+
+const char* SpeedrunWarp_CategoryName(int cat) {
+    const SpeedrunCategory* c = SpeedrunCat(cat);
+    return c ? c->name : "";
+}
+
+bool SpeedrunWarp_CategoryIsFlat(int cat) {
+    const SpeedrunCategory* c = SpeedrunCat(cat);
+    return c && c->flat;
+}
+
+int SpeedrunWarp_PlaceCount(int cat) {
+    const SpeedrunCategory* c = SpeedrunCat(cat);
+    if (c == nullptr) {
+        return 0;
+    }
+    return c->flat ? c->bossCount : c->sceneCount;
+}
+
+const char* SpeedrunWarp_PlaceName(int cat, int place) {
+    const SpeedrunCategory* c = SpeedrunCat(cat);
+    if (c == nullptr || place < 0) {
+        return "";
+    }
+    if (c->flat) {
+        return (place < c->bossCount) ? c->bosses[place].name : "";
+    }
+    if (place >= c->sceneCount) {
+        return "";
+    }
+    return SceneSelect_GetSceneName(c->scenes[place]);
+}
+
+int SpeedrunWarp_EntranceCount(int cat, int place) {
+    const SpeedrunCategory* c = SpeedrunCat(cat);
+    if (c == nullptr || c->flat || place < 0 || place >= c->sceneCount) {
+        return 0;
+    }
+    return SceneSelect_GetEntranceCount(c->scenes[place]);
+}
+
+const char* SpeedrunWarp_EntranceName(int cat, int place, int entrance) {
+    const SpeedrunCategory* c = SpeedrunCat(cat);
+    if (c == nullptr || c->flat || place < 0 || place >= c->sceneCount) {
+        return "";
+    }
+    return SceneSelect_GetEntranceName(c->scenes[place], entrance);
+}
+
+bool SpeedrunWarp_Do(int cat, int place, int entrance) {
+    const SpeedrunCategory* c = SpeedrunCat(cat);
+    if (c == nullptr || place < 0) {
+        return false;
+    }
+    s32 entranceIndex;
+    if (c->flat) {
+        if (place >= c->bossCount) {
+            return false;
+        }
+        entranceIndex = SceneSelect_GetEntranceIndexAt(c->bosses[place].scene, c->bosses[place].entrance);
+    } else {
+        if (place >= c->sceneCount) {
+            return false;
+        }
+        entranceIndex = SceneSelect_GetEntranceIndexAt(c->scenes[place], entrance);
+    }
+    if (entranceIndex < 0) {
+        return false;
+    }
+    WarpToEntrance(entranceIndex);
+    return true;
+}
+
+std::vector<std::string> GetWarpPointNames() {
+    std::vector<std::string> names;
+    names.reserve(warpPoints.size());
+    for (const auto& [name, point] : warpPoints) {
+        names.push_back(name);
+    }
+    return names;
+}
+
+bool WarpToNamedPoint(const std::string& name) {
+    auto it = warpPoints.find(name);
+    if (it == warpPoints.end()) {
+        return false;
+    }
+    Warp(it->second);
+    return true;
 }
 
 static std::string warpNameInput = "";

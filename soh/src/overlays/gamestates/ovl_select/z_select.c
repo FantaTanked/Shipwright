@@ -863,6 +863,63 @@ static BetterSceneSelectGrottoData sBetterGrottos[] = {
     // clang-format on
 };
 
+// speedrun: read-only accessors over the curated scene list, so features like the speedrun
+// warps menu can reuse it (name + a sensible default entrance per scene) without
+// duplicating the table.
+s32 SceneSelect_GetSceneCount(void) {
+    return ARRAY_COUNT(sBetterScenes);
+}
+
+const char* SceneSelect_GetSceneName(s32 index) {
+    if (index < 0 || index >= (s32)ARRAY_COUNT(sBetterScenes)) {
+        return "";
+    }
+    // Skip the leading " N:" numbering for a cleaner speedrun-style label.
+    const char* name = sBetterScenes[index].englishName;
+    const char* colon = name;
+    while (*colon != '\0' && *colon != ':') {
+        colon++;
+    }
+    return (*colon == ':') ? colon + 1 : name;
+}
+
+s32 SceneSelect_GetSceneEntrance(s32 index) {
+    if (index < 0 || index >= (s32)ARRAY_COUNT(sBetterScenes)) {
+        return -1;
+    }
+    return sBetterScenes[index].entrancePairs[0].entranceIndex;
+}
+
+// Per-entrance accessors, so the speedrun warps menu can offer every named entrance of a scene
+// (boss rooms, sub-entrances, ...) instead of collapsing to the first one.
+s32 SceneSelect_GetEntranceCount(s32 scene) {
+    if (scene < 0 || scene >= (s32)ARRAY_COUNT(sBetterScenes)) {
+        return 0;
+    }
+    return sBetterScenes[scene].entranceCount;
+}
+
+const char* SceneSelect_GetEntranceName(s32 scene, s32 entrance) {
+    if (scene < 0 || scene >= (s32)ARRAY_COUNT(sBetterScenes)) {
+        return "";
+    }
+    if (entrance < 0 || entrance >= sBetterScenes[scene].entranceCount) {
+        return "";
+    }
+    // Entrance names carry no " N:" numbering, so return them as-is.
+    return sBetterScenes[scene].entrancePairs[entrance].englishName;
+}
+
+s32 SceneSelect_GetEntranceIndexAt(s32 scene, s32 entrance) {
+    if (scene < 0 || scene >= (s32)ARRAY_COUNT(sBetterScenes)) {
+        return -1;
+    }
+    if (entrance < 0 || entrance >= sBetterScenes[scene].entranceCount) {
+        return -1;
+    }
+    return sBetterScenes[scene].entrancePairs[entrance].entranceIndex;
+}
+
 void Select_UpdateMenu(SelectContext* this) {
     Input* input = &this->state.input[0];
     s32 pad;

@@ -847,7 +847,8 @@ static std::string SaveStateDiskPath(unsigned int slot) {
     return dir + "/slot" + std::to_string(slot) + ".savestate";
 }
 
-// B1: relocate code/function pointers across a restart. ASLR shifts the whole soh.exe image by one delta, so
+// Code-pointer relocation: fix up captured pointers into the soh.exe image after a restart. ASLR shifts the
+// whole image by one delta, so
 // every captured pointer that fell inside the save-time image range is patched by (newBase - oldBase). Scans
 // the whole info blob at 8-byte stride (x64 pointers are aligned); audio/heap pointers fall outside the EXE
 // range and are untouched. A no-op when the image didn't move (in-session load => delta 0).
@@ -875,7 +876,7 @@ static void SaveState_RelocateExePointers(SaveStateInfo* info, uint64_t oldBase,
 static constexpr int32_t kResMainPayload = -1; // res->GetRawPointer()
 static constexpr int32_t kResObjectPtr = -2;   // the IResource object pointer itself (null-payload res, e.g. Scene)
 
-// B2 save side: for every loaded resource, record its main payload plus each typed sub-allocation
+// Resource-pointer relocation (save side): for every loaded resource, record its main payload plus each typed sub-allocation
 // it declares (subIndex i, from GetSubAllocations -- e.g. a skeleton's limb array). On load these blocks are
 // re-resolved from the reloaded resource and every captured heap pointer aimed at them is relocated.
 static std::vector<SaveStateResEntry> SaveState_CollectResources(void) {
@@ -889,7 +890,7 @@ static std::vector<SaveStateResEntry> SaveState_CollectResources(void) {
             continue;
         }
         if (path.size() >= sizeof(SaveStateResEntry::name)) {
-            SPDLOG_WARN("[SaveState][B2] resource path too long, skipping: '{}'", path);
+            SPDLOG_WARN("[SaveState]resource path too long, skipping: '{}'", path);
             continue; // can't round-trip the name
         }
         void* mainPtr = res->GetRawPointer();
@@ -922,13 +923,13 @@ static std::vector<SaveStateResEntry> SaveState_CollectResources(void) {
 }
 
 namespace {
-struct B2Range {
+struct ResourceRelocRange {
     uintptr_t oldLo, oldHi;
     intptr_t delta;
 };
 } // namespace
 
-// B2 load side: relocate captured resource pointers for this run's ASLR. Each saved resource is reloaded by
+// Resource-pointer relocation (load side): fix up captured pointers into reloaded resources. Each saved resource is reloaded by
 // name (LoadResource caches it, keeping the payload alive); every captured heap word inside a resource's old
 // payload range is shifted to the reloaded payload. FAIL-CLOSED: if any resource can't be reloaded at its saved
 // size, refuse the load -- a half-relocated heap is worse than no load. Returns false to abort the load.
@@ -938,11 +939,11 @@ static bool SaveState_RelocateResourcePointers(SaveStateInfo* info, const std::v
     }
     auto rm = Ship::Context::GetRawInstance()->GetResourceManager();
     if (rm == nullptr) {
-        SPDLOG_ERROR("[SaveState][B2] no resource manager -- refusing load");
+        SPDLOG_ERROR("[SaveState]no resource manager -- refusing load");
         return false;
     }
 
-    std::vector<B2Range> ranges;
+    std::vector<ResourceRelocRange> ranges;
     ranges.reserve(table.size());
     for (const auto& e : table) {
         if (e.oldBase == 0 || e.oldSize == 0) {
@@ -950,7 +951,7 @@ static bool SaveState_RelocateResourcePointers(SaveStateInfo* info, const std::v
         }
         auto res = rm->LoadResource(e.name); // reload (cached) -> keeps the payload + its sub-allocations alive
         if (res == nullptr) {
-            SPDLOG_ERROR("[SaveState][B2] resource '{}' unavailable -- refusing load", e.name);
+            SPDLOG_ERROR("[SaveState]resource '{}' unavailable -- refusing load", e.name);
             return false; // fail-closed
         }
         void* nb = nullptr;
@@ -969,7 +970,7 @@ static bool SaveState_RelocateResourcePointers(SaveStateInfo* info, const std::v
             }
         }
         if (nb == nullptr || ns != e.oldSize) {
-            SPDLOG_ERROR("[SaveState][B2] '{}' block sub={} mismatch (newBase={}, size {} vs saved {}) -- refusing load",
+            SPDLOG_ERROR("[SaveState]'{}' block sub={} mismatch (newBase={}, size {} vs saved {}) -- refusing load",
                          e.name, e.subIndex, nb, (uint64_t)ns, e.oldSize);
             return false; // fail-closed: a different asset/build, or a sub-allocation that no longer exists
         }
@@ -979,7 +980,7 @@ static bool SaveState_RelocateResourcePointers(SaveStateInfo* info, const std::v
     }
 
     // Relocate: sort by old range start, binary-search each 8-byte-aligned heap word.
-    std::sort(ranges.begin(), ranges.end(), [](const B2Range& a, const B2Range& b) { return a.oldLo < b.oldLo; });
+    std::sort(ranges.begin(), ranges.end(), [](const ResourceRelocRange& a, const ResourceRelocRange& b) { return a.oldLo < b.oldLo; });
     uintptr_t* p = reinterpret_cast<uintptr_t*>(&info->sysHeapCopy);
     const size_t n = SYSTEM_HEAP_SIZE / sizeof(uintptr_t);
 
@@ -1081,9 +1082,9 @@ bool SaveState::ReadFromDisk(void) {
     }
     fclose(f);
     if (ok) {
-        // B1: patch code/function pointers for this run's ASLR before the state gets applied.
+        // Code-pointer relocation: patch pointers into the soh.exe image for this run's ASLR before applying.
         SaveState_RelocateExePointers(this->info.get(), header.exeBase, header.exeSize, (uint64_t)gExeBase);
-        // B2: reload + relocate resource pointers. Fail-closed -- if a resource can't be reloaded at its saved
+        // Resource-pointer relocation: reload + relocate. Fail-closed -- if a resource can't be reloaded at its saved
         // size, abort the load rather than apply a heap with dangling resource pointers.
         if (!SaveState_RelocateResourcePointers(this->info.get(), resTable)) {
             SPDLOG_ERROR("[SaveState] '{}' resource relocation failed -- not applying", path);

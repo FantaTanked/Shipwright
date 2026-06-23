@@ -68,6 +68,17 @@ void Heaps_Alloc(void) {
         gSystemHeap = (u8*)_aligned_malloc(SYSTEM_HEAP_SIZE, 0x10);
     }
 #elif defined(_POSIX_VERSION) && (_POSIX_VERSION >= 200112L)
+    // TODO(cross-restart savestates on 64-bit Linux/macOS): to pin the heaps here like the _WIN64 path above,
+    // try the fixed bases via mmap() before falling back to posix_memalign. Mirror the Windows shape exactly --
+    // attempt at SYSTEM_HEAP_FIXED_BASE / AUDIO_HEAP_FIXED_BASE, and if the OS hands back a different address,
+    // munmap it and fall through to posix_memalign (leaving gHeapsArePinned 0). Per-OS detail:
+    //   - Linux: mmap(base, size, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED_NOREPLACE, -1, 0)
+    //            (MAP_FIXED_NOREPLACE needs kernel >= 4.17; check the returned addr == base anyway).
+    //   - macOS: no MAP_FIXED_NOREPLACE -- mmap(base, ..., MAP_PRIVATE|MAP_ANONYMOUS, ...) WITHOUT MAP_FIXED
+    //            (plain MAP_FIXED clobbers existing mappings -- do NOT use it), then verify addr == base or bail.
+    // mmap zero-fills anonymous pages (matches a fresh heap). Set gHeapsArePinned only if BOTH land, and add the
+    // matching munmap in Heaps_Free. Left unimplemented because it can't be build/run-verified here -- a broken
+    // build on those targets is worse than the missing feature, so this stays _WIN64-only for now.
     if (posix_memalign((void**)&gAudioHeap, 0x10, AUDIO_HEAP_SIZE) != 0)
         gAudioHeap = NULL;
     if (posix_memalign((void**)&gSystemHeap, 0x10, SYSTEM_HEAP_SIZE) != 0)

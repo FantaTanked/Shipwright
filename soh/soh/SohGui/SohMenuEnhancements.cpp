@@ -1235,6 +1235,18 @@ void SohMenu::AddMenuEnhancements() {
         .Options(CheckboxOptions().Tooltip(
             "Restores a bug from NTSC 1.0/1.1 that allows you to obtain the eyeball frog from King Zora "
             "instead of the Zora Tunic by Holding Shield."));
+    AddWidget(path, "Wrong Warps", WIDGET_CVAR_CHECKBOX)
+        .CVar(CVAR_ENHANCEMENT("WrongWarp"))
+        .Options(CheckboxOptions().Tooltip(
+            "Restores cutscene-pointer wrong warps (ganondoor, jabu->DC, 1080, ...) via the actual route. When "
+            "a wrong warp's cutscene-number entrance overshoot resolves to a clean gameplay spawn, you land at "
+            "the destination with control, matching N64 1.0. Outcomes are computed from real ROM data "
+            "(mzxrules' wrong-warp tables), not hardcoded per warp."));
+    AddWidget(path, "Wrong Warp Capture (Debug)", WIDGET_CVAR_CHECKBOX)
+        .CVar(CVAR_ENHANCEMENT("WrongWarpCapture"))
+        .Options(CheckboxOptions().Tooltip(
+            "Logs each wrong warp's entrance / cutscene index / resolved destination to the console log, for "
+            "cross-checking against mzxrules' wrong-warp table."));
 
     AddWidget(path, "Misc Restorations", WIDGET_SEPARATOR_TEXT);
     AddWidget(path, "Fix L&Z Page Switch in Pause Menu", WIDGET_CVAR_CHECKBOX)

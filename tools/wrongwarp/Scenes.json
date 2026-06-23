@@ -1,0 +1,406 @@
+﻿[
+  {
+    "Id": 0,
+    "Scene": "Deku Tree"
+  },
+  {
+    "Id": 1,
+    "Scene": "Dodongo's Cavern"
+  },
+  {
+    "Id": 2,
+    "Scene": "Inside Jabu Jabu's Belly"
+  },
+  {
+    "Id": 3,
+    "Scene": "Forest Temple"
+  },
+  {
+    "Id": 4,
+    "Scene": "Fire Temple"
+  },
+  {
+    "Id": 5,
+    "Scene": "Water Temple"
+  },
+  {
+    "Id": 6,
+    "Scene": "Spirit Temple"
+  },
+  {
+    "Id": 7,
+    "Scene": "Shadow Temple"
+  },
+  {
+    "Id": 8,
+    "Scene": "Bottom of the Well"
+  },
+  {
+    "Id": 9,
+    "Scene": "Ice Cavern"
+  },
+  {
+    "Id": 10,
+    "Scene": "Ganon's Tower Climb"
+  },
+  {
+    "Id": 11,
+    "Scene": "Gerudo Training Grounds"
+  },
+  {
+    "Id": 12,
+    "Scene": "Thieves' Hideout"
+  },
+  {
+    "Id": 13,
+    "Scene": "Inside Ganon's Castle"
+  },
+  {
+    "Id": 14,
+    "Scene": "Tower Collapse Interior"
+  },
+  {
+    "Id": 15,
+    "Scene": "Tower Collapse Interior Exit"
+  },
+  {
+    "Id": 16,
+    "Scene": "Treasure Box Shop"
+  },
+  {
+    "Id": 17,
+    "Scene": "Deku Tree Boss"
+  },
+  {
+    "Id": 18,
+    "Scene": "Dodongo's Cavern Boss"
+  },
+  {
+    "Id": 19,
+    "Scene": "Inside Jabu Jabu's Belly Boss"
+  },
+  {
+    "Id": 20,
+    "Scene": "Forest Temple Boss"
+  },
+  {
+    "Id": 21,
+    "Scene": "Fire Temple Boss"
+  },
+  {
+    "Id": 22,
+    "Scene": "Water Temple Boss"
+  },
+  {
+    "Id": 23,
+    "Scene": "Spirit Temple Boss"
+  },
+  {
+    "Id": 24,
+    "Scene": "Shadow Temple Boss"
+  },
+  {
+    "Id": 25,
+    "Scene": "Ganondorf Boss Room"
+  },
+  {
+    "Id": 26,
+    "Scene": "Tower Collapse Exterior"
+  },
+  {
+    "Id": 27,
+    "Scene": "Market Entrance - Child Day"
+  },
+  {
+    "Id": 28,
+    "Scene": "Market Entrance - Child Night"
+  },
+  {
+    "Id": 29,
+    "Scene": "Market Entrance - Adult"
+  },
+  {
+    "Id": 30,
+    "Scene": "Back Alley - Day"
+  },
+  {
+    "Id": 31,
+    "Scene": "Back Alley - Night"
+  },
+  {
+    "Id": 32,
+    "Scene": "Market - Child Day"
+  },
+  {
+    "Id": 33,
+    "Scene": "Market - Child Night"
+  },
+  {
+    "Id": 34,
+    "Scene": "Market - Adult"
+  },
+  {
+    "Id": 35,
+    "Scene": "Outside Temple of Time - Child Day"
+  },
+  {
+    "Id": 36,
+    "Scene": "Outside Temple of Time - Child Night"
+  },
+  {
+    "Id": 37,
+    "Scene": "Outside Temple of Time - Adult"
+  },
+  {
+    "Id": 38,
+    "Scene": "Know-it-all Brothers"
+  },
+  {
+    "Id": 39,
+    "Scene": "House of Twins"
+  },
+  {
+    "Id": 40,
+    "Scene": "Mido's House"
+  },
+  {
+    "Id": 41,
+    "Scene": "Saria's House"
+  },
+  {
+    "Id": 42,
+    "Scene": "Kakariko Village House"
+  },
+  {
+    "Id": 43,
+    "Scene": "Back Alley Village House"
+  },
+  {
+    "Id": 44,
+    "Scene": "Bazaar"
+  },
+  {
+    "Id": 45,
+    "Scene": "Kokiri Shop"
+  },
+  {
+    "Id": 46,
+    "Scene": "Goron Shop"
+  },
+  {
+    "Id": 47,
+    "Scene": "Zora Shop"
+  },
+  {
+    "Id": 48,
+    "Scene": "Kakariko Potion Shop"
+  },
+  {
+    "Id": 49,
+    "Scene": "Market Potion Shop"
+  },
+  {
+    "Id": 50,
+    "Scene": "Bombchu Shop"
+  },
+  {
+    "Id": 51,
+    "Scene": "Happy Mask Shop"
+  },
+  {
+    "Id": 52,
+    "Scene": "Link's House"
+  },
+  {
+    "Id": 53,
+    "Scene": "Puppy Woman's House"
+  },
+  {
+    "Id": 54,
+    "Scene": "Stables"
+  },
+  {
+    "Id": 55,
+    "Scene": "Impa's House"
+  },
+  {
+    "Id": 56,
+    "Scene": "Lakeside Laboratory"
+  },
+  {
+    "Id": 57,
+    "Scene": "Carpenter's Tent"
+  },
+  {
+    "Id": 58,
+    "Scene": "Gravekeeper's Hut"
+  },
+  {
+    "Id": 59,
+    "Scene": "Great Fairy's Fountain (Upgrades)"
+  },
+  {
+    "Id": 60,
+    "Scene": "Small Fairy's Fountain"
+  },
+  {
+    "Id": 61,
+    "Scene": "Great Fairy's Fountain (Spells)"
+  },
+  {
+    "Id": 62,
+    "Scene": "Grottos"
+  },
+  {
+    "Id": 63,
+    "Scene": "Grave with Redead"
+  },
+  {
+    "Id": 64,
+    "Scene": "Grave with Shield"
+  },
+  {
+    "Id": 65,
+    "Scene": "Royal Family's Tomb"
+  },
+  {
+    "Id": 66,
+    "Scene": "Shooting Gallery"
+  },
+  {
+    "Id": 67,
+    "Scene": "Temple of Time"
+  },
+  {
+    "Id": 68,
+    "Scene": "Chamber of Sages"
+  },
+  {
+    "Id": 69,
+    "Scene": "Castle Courtyard - Day"
+  },
+  {
+    "Id": 70,
+    "Scene": "Castle Courtyard - Night"
+  },
+  {
+    "Id": 71,
+    "Scene": "Cutscene Map"
+  },
+  {
+    "Id": 72,
+    "Scene": "? (Windmill/Dampe's Grave)"
+  },
+  {
+    "Id": 73,
+    "Scene": "Fishing Pond"
+  },
+  {
+    "Id": 74,
+    "Scene": "Zelda's Courtyard"
+  },
+  {
+    "Id": 75,
+    "Scene": "Bombchu Bowling Alley"
+  },
+  {
+    "Id": 76,
+    "Scene": "Lon Lon Ranch Buildings"
+  },
+  {
+    "Id": 77,
+    "Scene": "Lots o' Pots"
+  },
+  {
+    "Id": 78,
+    "Scene": "Granny's Potion Shop"
+  },
+  {
+    "Id": 79,
+    "Scene": "Ganon Battle"
+  },
+  {
+    "Id": 80,
+    "Scene": "House of Skulltula"
+  },
+  {
+    "Id": 81,
+    "Scene": "Hyrule Field"
+  },
+  {
+    "Id": 82,
+    "Scene": "Kakariko Village"
+  },
+  {
+    "Id": 83,
+    "Scene": "Kakariko Graveyard"
+  },
+  {
+    "Id": 84,
+    "Scene": "Zora River"
+  },
+  {
+    "Id": 85,
+    "Scene": "Kokiri Forest"
+  },
+  {
+    "Id": 86,
+    "Scene": "Sacred Forest Meadow"
+  },
+  {
+    "Id": 87,
+    "Scene": "Lake Hylia"
+  },
+  {
+    "Id": 88,
+    "Scene": "Zora's Domain"
+  },
+  {
+    "Id": 89,
+    "Scene": "Zora's Fountain"
+  },
+  {
+    "Id": 90,
+    "Scene": "Gerudo Valley"
+  },
+  {
+    "Id": 91,
+    "Scene": "Lost Woods"
+  },
+  {
+    "Id": 92,
+    "Scene": "Desert Colossus"
+  },
+  {
+    "Id": 93,
+    "Scene": "Gerudo Fortress"
+  },
+  {
+    "Id": 94,
+    "Scene": "Haunted Wasteland"
+  },
+  {
+    "Id": 95,
+    "Scene": "Hyrule Castle"
+  },
+  {
+    "Id": 96,
+    "Scene": "Death Mountain Trail"
+  },
+  {
+    "Id": 97,
+    "Scene": "Death Mountain Crater"
+  },
+  {
+    "Id": 98,
+    "Scene": "Goron City"
+  },
+  {
+    "Id": 99,
+    "Scene": "Lon Lon Ranch"
+  },
+  {
+    "Id": 100,
+    "Scene": "Ganon's Castle"
+  }
+]

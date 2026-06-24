@@ -206,6 +206,16 @@ bool Scene_CommandTransitionActorList(PlayState* play, SOH::ISceneCommand* cmd) 
     play->transiActorCtx.numActors = cmdActor->numTransitionActors;
     play->transiActorCtx.list = (TransitionActorEntry*)cmdActor->GetRawPointer();
 
+    // Reset negated transition-actor ids (negated in place on spawn, un-negated by Destroy).
+    // A savestate load skips Destroy, so this cached, never-reloaded list can keep ids negative
+    // across re-entry, making the spawn loop skip those actors (doors/loadzone/crawlspace planes).
+    for (s32 i = 0; i < play->transiActorCtx.numActors; i++) {
+        TransitionActorEntry* entry = &play->transiActorCtx.list[i];
+        if (entry->id < 0) {
+            entry->id = -entry->id;
+        }
+    }
+
     return false;
 }
 

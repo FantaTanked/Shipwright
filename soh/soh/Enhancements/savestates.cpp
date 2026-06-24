@@ -36,7 +36,7 @@ extern "C" uint32_t gExeSize;  // soh.exe image size (main.c)
 // Magic + format version for on-disk savestate files (cross-session persistence). Bump the version whenever
 // the on-disk layout changes (e.g. when the relocation metadata is added) so older files are cleanly rejected.
 #define SAVESTATE_DISK_MAGIC 0x53534F48u // "SSOH"
-#define SAVESTATE_DISK_VERSION 7u        // v7: also carries the Heap Fragmentation shadow-arena snapshot
+#define SAVESTATE_DISK_VERSION 8u        // v8: also carries the transition-actor "already spawned" flags
 
 // The Heap Fragmentation enhancement keeps a host-side "shadow" N64 arena outside the captured game heap;
 // the savestate must snapshot it too or loading a state desyncs it. HeapFragmentation.cpp owns the
@@ -351,6 +351,14 @@ typedef struct SaveStateInfo {
     s16 sMessageHasSetSfx_copy;
     u16 sOcarinaSongBitFlags_copy;
 
+    // Transition-actor "already spawned" flags. Each scene's transition-actor list (doors, plus loadzone
+    // and crawlspace En_Holl planes) lives in cached resource memory OUTSIDE the snapshotted heap; the game
+    // marks an entry spawned by negating its id in place. A heap restore brings the actors back but not these
+    // signs, so without capturing them a transition actor can be wrongly skipped (missing) or double-spawned
+    // on the next room load. numActors is a u8, so 256 entries covers any scene.
+    u8 transitionActorCount_copy;
+    s16 transitionActorIds_copy[256];
+
 } SaveStateInfo;
 
 class SaveState {
@@ -363,6 +371,12 @@ class SaveState {
     unsigned int slot;
     std::shared_ptr<SaveStateMgr> saveStateMgr;
     std::shared_ptr<SaveStateInfo> info;
+
+    // True when `info`'s audio context came from another session (loaded from disk). That audio's sequence/
+    // soundfont tables are never relocated, so they are stale this session -- EVERY load of this state must keep
+    // the live audio (as the disk load does), not just the first one, or the audio thread dereferences stale
+    // pointers and crashes. Set by ReadFromDisk, cleared by Save (a fresh capture's audio is valid this session).
+    bool audioCrossSession = false;
 
     void Save(void);
     // crossRestart: this load follows a quit/relaunch, so the saved audio context's resource tables are stale --
@@ -379,6 +393,9 @@ class SaveState {
 
     void SaveMiscCodeData(void);
     void LoadMiscCodeData(void);
+
+    void SaveTransitionActors(void);
+    void LoadTransitionActors(void);
 
     // Cross-session persistence: serialize/restore the captured `info` blob to a per-slot file. POD blob, so
     // a single fwrite/fread is valid; a header guards magic/version/size so a stale or wrong-build file is
@@ -1152,6 +1169,11 @@ bool SaveState::ReadFromDisk(const std::string& explicitPath) {
         }
         SPDLOG_INFO("[SaveState] read slot {} <- '{}'", this->slot, path);
     }
+    if (ok) {
+        // This blob's audio belongs to the session that wrote the file -- mark it so every load keeps the live
+        // audio rather than restoring the stale tables (see audioCrossSession).
+        audioCrossSession = true;
+    }
     return ok;
 }
 
@@ -1218,7 +1240,16 @@ void SaveStateMgr::ProcessSaveStateRequests(void) {
                 break;
             case RequestType::LOAD:
                 if (this->states.contains(request.slot)) {
-                    this->states[request.slot]->Load();
+                    const auto& state = this->states[request.slot];
+                    if (state->audioCrossSession) {
+                        // Imported state: its saved audio tables are stale this session. Load it the same way as
+                        // a fresh disk load -- keep the live audio and re-trigger the BGM -- so the audio thread
+                        // never touches the stale context.
+                        state->Load(/*crossRestart=*/true);
+                        PlayDestinationSceneAudio();
+                    } else {
+                        state->Load();
+                    }
                     Ship::Context::GetRawInstance()->GetWindow()->GetGui()->GetGameOverlay()->TextDrawNotification(
                         1.0f, true, "loaded state %u", request.slot);
                 } else {
@@ -1294,6 +1325,39 @@ SaveStateReturn SaveStateMgr::AddRequest(const SaveStateRequest request) {
     }
 }
 
+// Transition-actor "already spawned" flags live in cached resource memory outside the snapshotted heap (the
+// game negates an entry's id in place on spawn). Capture/restore them so a load keeps "already spawned" in
+// sync with the restored actors -- otherwise a door/loadzone/crawlspace actor is wrongly skipped or doubled
+// on the next room load (Actor_SpawnTransitionActors skips entries whose id is negative).
+void SaveState::SaveTransitionActors(void) {
+    info->transitionActorCount_copy = 0;
+    if (gPlayState == nullptr || gPlayState->transiActorCtx.list == nullptr) {
+        return;
+    }
+    const u32 cap = (u32)(sizeof(info->transitionActorIds_copy) / sizeof(info->transitionActorIds_copy[0]));
+    u32 numActors = gPlayState->transiActorCtx.numActors;
+    if (numActors > cap) {
+        numActors = cap;
+    }
+    info->transitionActorCount_copy = (u8)numActors;
+    for (u32 i = 0; i < numActors; i++) {
+        info->transitionActorIds_copy[i] = gPlayState->transiActorCtx.list[i].id;
+    }
+}
+
+void SaveState::LoadTransitionActors(void) {
+    if (gPlayState == nullptr || gPlayState->transiActorCtx.list == nullptr) {
+        return;
+    }
+    u32 numActors = info->transitionActorCount_copy;
+    if (numActors > gPlayState->transiActorCtx.numActors) {
+        numActors = gPlayState->transiActorCtx.numActors;
+    }
+    for (u32 i = 0; i < numActors; i++) {
+        gPlayState->transiActorCtx.list[i].id = info->transitionActorIds_copy[i];
+    }
+}
+
 void SaveState::Save(void) {
     std::unique_lock<std::mutex> Lock(audio.mutex);
     memcpy(&info->sysHeapCopy, gSystemHeap, SYSTEM_HEAP_SIZE /* sizeof(gSystemHeap) */);
@@ -1329,6 +1393,9 @@ void SaveState::Save(void) {
     SaveOnePointDemoData();
     SaveOverlayStaticData();
     SaveMiscCodeData();
+    SaveTransitionActors();
+    // Fresh capture: this audio context is valid this session, so future loads may restore it.
+    audioCrossSession = false;
 }
 
 void SaveState::Load(bool crossRestart) {
@@ -1367,4 +1434,8 @@ void SaveState::Load(bool crossRestart) {
     LoadOnePointDemoData();
     LoadOverlayStaticData();
     LoadMiscCodeData();
+    // Safe in all cases: the heap restore brings back a valid transiActorCtx.list -- same-session-stable, or
+    // relocated to the reloaded scene resource by the cross-session pointer fixup (it's a captured Scene
+    // sub-allocation, SetTransitionActorList::GetRawPointer). Only the id signs it points at need re-syncing.
+    LoadTransitionActors();
 }

@@ -36,7 +36,7 @@ extern "C" uint32_t gExeSize;  // soh.exe image size (main.c)
 // Magic + format version for on-disk savestate files (cross-session persistence). Bump the version whenever
 // the on-disk layout changes (e.g. when the relocation metadata is added) so older files are cleanly rejected.
 #define SAVESTATE_DISK_MAGIC 0x53534F48u // "SSOH"
-#define SAVESTATE_DISK_VERSION 8u        // v8: also carries the transition-actor "already spawned" flags
+#define SAVESTATE_DISK_VERSION 9u        // v9: dropped dead duplicate SaveStateInfo fields (layout change)
 
 // The Heap Fragmentation enhancement keeps a host-side "shadow" N64 arena outside the captured game heap;
 // the savestate must snapshot it too or loading a state desyncs it. HeapFragmentation.cpp owns the
@@ -177,9 +177,6 @@ typedef struct SaveStateInfo {
     // z_bg_hidan_rock
     float D_8088BFC0_copy;
 
-    // z_bg_menkuri_eye
-    int32_t D_8089C1A0_copy;
-
     // z_bg_mori_hineri
     int16_t sBgMoriHineriNextCamIdx_copy;
 
@@ -202,15 +199,6 @@ typedef struct SaveStateInfo {
     void* sBossGanonZelda_copy;
     void* sBossGanonCape_copy;
     GanondorfEffect sBossGanonEffectBuf_copy[200];
-
-    // z_boss_ganon
-    uint32_t sBossGanonSeed1;
-    uint32_t sBossGanonSeed2;
-    uint32_t sBossGanonSeed3;
-    void* sBossGanonGanondorf;
-    void* sBossGanonZelda;
-    void* sBossGanonCape;
-    GanondorfEffect sBossGanonEffectBuf[200];
 
     // z_boss_ganon2
     Vec3f D_8090EB20_copy;
@@ -493,11 +481,16 @@ static void SaveStateNotify(const char* fmt, unsigned int slot) {
     Ship::Context::GetRawInstance()->GetWindow()->GetGui()->GetGameOverlay()->TextDrawNotification(1.0f, true, fmt, slot);
 }
 
-static std::string SaveStateDiskPath(unsigned int slot) {
-    std::string dir = Ship::Context::GetPathRelativeToAppDirectory("savestates");
+// The savestates folder (created if missing). Shared by the per-slot path and GetStateDirectory.
+static std::string SaveStateDir(void) {
+    const std::string dir = Ship::Context::GetPathRelativeToAppDirectory("savestates");
     std::error_code ec;
     std::filesystem::create_directories(dir, ec);
-    return dir + "/slot" + std::to_string(slot) + ".st";
+    return dir;
+}
+
+static std::string SaveStateDiskPath(unsigned int slot) {
+    return SaveStateDir() + "/slot" + std::to_string(slot) + ".st";
 }
 
 // Code-pointer relocation: fix up captured pointers into the soh.exe image after a restart. ASLR shifts the
@@ -538,7 +531,9 @@ static std::vector<SaveStateResEntry> SaveState_CollectResources(void) {
     if (rm == nullptr) {
         return table;
     }
-    for (const auto& [path, res] : rm->GetLoadedResourcePointers()) {
+    const auto loaded = rm->GetLoadedResourcePointers();
+    table.reserve(loaded.size() * 2); // ~1 main payload + sub-allocations per resource; avoid repeated reallocs
+    for (const auto& [path, res] : loaded) {
         if (res == nullptr) {
             continue;
         }
@@ -812,10 +807,7 @@ unsigned int SaveStateMgr::GetCurrentSlot(void) {
 
 // The folder savestate files live in (also creates it). Used by the practice menu's export/import dialogs.
 std::string SaveStateMgr::GetStateDirectory(void) {
-    const std::string dir = Ship::Context::GetPathRelativeToAppDirectory("savestates");
-    std::error_code ec;
-    std::filesystem::create_directories(dir, ec);
-    return dir;
+    return SaveStateDir();
 }
 
 // Export: capture the live state and serialize it to `path` (reuses the SAVE_TO_DISK pipeline).
@@ -868,15 +860,10 @@ void SaveStateMgr::ProcessSaveStateRequests(void) {
             case RequestType::LOAD:
                 if (this->states.contains(request.slot)) {
                     const auto& state = this->states[request.slot];
-                    if (state->audioCrossSession) {
-                        // Imported state: its saved audio tables are stale this session. Load it the same way as
-                        // a fresh disk load -- keep the live audio and re-trigger the BGM -- so the audio thread
-                        // never touches the stale context.
-                        state->Load(/*crossRestart=*/true);
-                        PlayDestinationSceneAudio();
-                    } else {
-                        state->Load();
-                    }
+                    // An imported state's saved audio tables are stale this session; load it as a cross-restart
+                    // (Load keeps the live audio and re-triggers the BGM) so the audio thread never touches the
+                    // stale context. A fresh in-session state loads normally.
+                    state->Load(state->audioCrossSession);
                     SaveStateNotify("loaded state %u", request.slot);
                 } else {
                     SPDLOG_ERROR("Invalid SaveState slot: {}", request.slot);
@@ -892,8 +879,8 @@ void SaveStateMgr::ProcessSaveStateRequests(void) {
             case RequestType::LOAD_FROM_DISK: {
                 auto& state = EnsureSlot(request.slot);
                 if (state->ReadFromDisk(request.path)) {
-                    state->Load(/*crossRestart=*/true); // keep live audio (saved tables stale)
-                    PlayDestinationSceneAudio();         // then switch to the destination's BGM
+                    // ReadFromDisk set audioCrossSession; Load keeps the live audio and re-triggers the BGM.
+                    state->Load(state->audioCrossSession);
                     SaveStateNotify("loaded state %u from disk", request.slot);
                 } else {
                     SaveStateNotify("disk load %u FAILED", request.slot);
@@ -1045,4 +1032,12 @@ void SaveState::Load(bool crossRestart) {
     // relocated to the reloaded scene resource by the cross-session pointer fixup (it's a captured Scene
     // sub-allocation, SetTransitionActorList::GetRawPointer). Only the id signs it points at need re-syncing.
     LoadTransitionActors();
+
+    if (crossRestart) {
+        // A cross-restart load kept this session's live audio, so re-trigger the destination scene's BGM. Release
+        // the audio lock first (Environment_PlaySceneSequence must not run under it). Folding it in here means
+        // every cross-restart caller gets the BGM switch, not just the disk-load path.
+        Lock.unlock();
+        PlayDestinationSceneAudio();
+    }
 }

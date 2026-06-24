@@ -88,9 +88,6 @@ extern "C" uint32_t D_80881014;
 // z_bg_hidan_rock
 extern "C" float D_8088BFC0;
 
-// z_bg_menkuri_eye
-extern "C" int32_t D_8089C1A0;
-
 // z_bg_mori_hineri
 extern "C" int16_t sBgMoriHineriNextCamIdx;
 
@@ -151,9 +148,6 @@ extern "C" EnFrPointers sEnFrPointers;
 
 // z_en_goma
 extern "C" uint8_t sSpawnNum;
-
-// z_en_in
-extern "C" int32_t D_80A7B998;
 
 // z_en_insect
 extern "C" float D_80A7DEB0;

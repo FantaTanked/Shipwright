@@ -471,6 +471,7 @@ void SaveState::LoadSeqScriptState(void) {
 void SaveState::BackupCameraData(void) {
     info->sInitRegs_copy = sInitRegs;
     info->gDbgCamEnabled_copy = gDbgCamEnabled;
+    info->sDbgModeIdx_copy = sDbgModeIdx;
     info->sNextUID_copy = sNextUID;
     info->sCameraInterfaceFlags_copy = sCameraInterfaceFlags;
     info->sCameraInterfaceAlpha_copy = sCameraInterfaceAlpha;
@@ -843,10 +844,10 @@ void SaveState::LoadMiscCodeData(void) {
     sOcarinaSongCnt = info->sOcarinaSongCnt_copy;
     sOcarinaAvailSongs = info->sOcarinaAvailSongs_copy;
     sStaffPlayingPos = info->sStaffPlayingPos_copy;
-    memcpy(info->sLearnSongPos_copy, info->sLearnSongPos_copy, sizeof(sLearnSongPos));
-    memcpy(info->D_8016BA50_copy, info->D_8016BA50_copy, sizeof(D_8016BA50));
-    memcpy(info->D_8016BA70_copy, info->D_8016BA70_copy, sizeof(D_8016BA70));
-    memcpy(info->sLearnSongExpectedNote_copy, info->sLearnSongExpectedNote_copy, sizeof(sLearnSongExpectedNote));
+    memcpy(sLearnSongPos, info->sLearnSongPos_copy, sizeof(sLearnSongPos));
+    memcpy(D_8016BA50, info->D_8016BA50_copy, sizeof(D_8016BA50));
+    memcpy(D_8016BA70, info->D_8016BA70_copy, sizeof(D_8016BA70));
+    memcpy(sLearnSongExpectedNote, info->sLearnSongExpectedNote_copy, sizeof(sLearnSongExpectedNote));
     memcpy(&D_8016BAA0, &info->D_8016BAA0_copy, sizeof(D_8016BAA0));
     sAudioHasMalonBgm = info->sAudioHasMalonBgm_copy;
     sAudioMalonBgmDist = info->sAudioMalonBgmDist_copy;
@@ -867,6 +868,12 @@ void SaveState::LoadMiscCodeData(void) {
 
 extern "C" void ProcessSaveStateRequests(void) {
     OTRGlobals::Instance->gSaveStateMgr->ProcessSaveStateRequests();
+}
+
+// Game-overlay toast used throughout the savestate flow; the 4-deep accessor chain is otherwise repeated at
+// every call site. Every current message is a single "%u" of the slot.
+static void SaveStateNotify(const char* fmt, unsigned int slot) {
+    Ship::Context::GetRawInstance()->GetWindow()->GetGui()->GetGameOverlay()->TextDrawNotification(1.0f, true, fmt, slot);
 }
 
 static std::string SaveStateDiskPath(unsigned int slot) {
@@ -1178,8 +1185,7 @@ bool SaveState::ReadFromDisk(const std::string& explicitPath) {
 }
 
 void SaveStateMgr::SetCurrentSlot(unsigned int slot) {
-    Ship::Context::GetRawInstance()->GetWindow()->GetGui()->GetGameOverlay()->TextDrawNotification(1.0f, true,
-                                                                                                   "slot %u set", slot);
+    SaveStateNotify("slot %u set", slot);
     this->currentSlot = slot;
 }
 
@@ -1224,19 +1230,23 @@ static void PlayDestinationSceneAudio(void) {
     Environment_PlaySceneSequence(gPlayState);
 }
 
+// Return the state in `slot`, lazily creating an empty one if it doesn't exist yet.
+std::shared_ptr<SaveState>& SaveStateMgr::EnsureSlot(unsigned int slot) {
+    auto& state = this->states[slot];
+    if (state == nullptr) {
+        state = std::make_shared<SaveState>(OTRGlobals::Instance->gSaveStateMgr, slot);
+    }
+    return state;
+}
+
 void SaveStateMgr::ProcessSaveStateRequests(void) {
     while (!this->requests.empty()) {
         const auto& request = this->requests.front();
 
         switch (request.type) {
             case RequestType::SAVE:
-                if (!this->states.contains(request.slot)) {
-                    this->states[request.slot] =
-                        std::make_shared<SaveState>(OTRGlobals::Instance->gSaveStateMgr, request.slot);
-                }
-                this->states[request.slot]->Save();
-                Ship::Context::GetRawInstance()->GetWindow()->GetGui()->GetGameOverlay()->TextDrawNotification(
-                    1.0f, true, "saved state %u", request.slot);
+                EnsureSlot(request.slot)->Save();
+                SaveStateNotify("saved state %u", request.slot);
                 break;
             case RequestType::LOAD:
                 if (this->states.contains(request.slot)) {
@@ -1250,40 +1260,31 @@ void SaveStateMgr::ProcessSaveStateRequests(void) {
                     } else {
                         state->Load();
                     }
-                    Ship::Context::GetRawInstance()->GetWindow()->GetGui()->GetGameOverlay()->TextDrawNotification(
-                        1.0f, true, "loaded state %u", request.slot);
+                    SaveStateNotify("loaded state %u", request.slot);
                 } else {
                     SPDLOG_ERROR("Invalid SaveState slot: {}", request.slot);
                 }
                 break;
-            case RequestType::SAVE_TO_DISK:
-                if (!this->states.contains(request.slot)) {
-                    this->states[request.slot] =
-                        std::make_shared<SaveState>(OTRGlobals::Instance->gSaveStateMgr, request.slot);
-                }
-                this->states[request.slot]->Save(); // capture live state into info, then serialize it
-                Ship::Context::GetRawInstance()->GetWindow()->GetGui()->GetGameOverlay()->TextDrawNotification(
-                    1.0f, true, this->states[request.slot]->WriteToDisk(request.path) ? "saved state %u to disk"
-                                                                          : "disk save %u FAILED",
-                    request.slot);
+            case RequestType::SAVE_TO_DISK: {
+                auto& state = EnsureSlot(request.slot);
+                state->Save(); // capture live state into info, then serialize it
+                SaveStateNotify(state->WriteToDisk(request.path) ? "saved state %u to disk" : "disk save %u FAILED",
+                                request.slot);
                 break;
-            case RequestType::LOAD_FROM_DISK:
-                if (!this->states.contains(request.slot)) {
-                    this->states[request.slot] =
-                        std::make_shared<SaveState>(OTRGlobals::Instance->gSaveStateMgr, request.slot);
-                }
-                if (this->states[request.slot]->ReadFromDisk(request.path)) {
-                    this->states[request.slot]->Load(/*crossRestart=*/true); // keep live audio (saved tables stale)
-                    PlayDestinationSceneAudio();                              // then switch to the destination's BGM
-                    Ship::Context::GetRawInstance()->GetWindow()->GetGui()->GetGameOverlay()->TextDrawNotification(
-                        1.0f, true, "loaded state %u from disk", request.slot);
+            }
+            case RequestType::LOAD_FROM_DISK: {
+                auto& state = EnsureSlot(request.slot);
+                if (state->ReadFromDisk(request.path)) {
+                    state->Load(/*crossRestart=*/true); // keep live audio (saved tables stale)
+                    PlayDestinationSceneAudio();         // then switch to the destination's BGM
+                    SaveStateNotify("loaded state %u from disk", request.slot);
                 } else {
-                    Ship::Context::GetRawInstance()->GetWindow()->GetGui()->GetGameOverlay()->TextDrawNotification(
-                        1.0f, true, "disk load %u FAILED", request.slot);
+                    SaveStateNotify("disk load %u FAILED", request.slot);
                 }
                 break;
-                [[unlikely]] default
-                    : SPDLOG_ERROR("Invalid SaveState request type: Unknown ({})", static_cast<int>(request.type));
+            }
+            [[unlikely]] default:
+                SPDLOG_ERROR("Invalid SaveState request type: Unknown ({})", static_cast<int>(request.type));
                 break;
         }
         this->requests.pop();
@@ -1293,34 +1294,29 @@ void SaveStateMgr::ProcessSaveStateRequests(void) {
 SaveStateReturn SaveStateMgr::AddRequest(const SaveStateRequest request) {
     if (gPlayState == nullptr) {
         SPDLOG_ERROR("[SOH] Can not save or load a state outside of \"GamePlay\"");
-        Ship::Context::GetRawInstance()->GetWindow()->GetGui()->GetGameOverlay()->TextDrawNotification(
-            1.0f, true, "states not available here", request.slot);
+        SaveStateNotify("states not available here", request.slot);
         return SaveStateReturn::FAIL_WRONG_GAMESTATE;
     }
 
     switch (request.type) {
         case RequestType::SAVE:
-            requests.push(request);
-            return SaveStateReturn::SUCCESS;
         case RequestType::SAVE_TO_DISK:
-            requests.push(request);
-            return SaveStateReturn::SUCCESS;
         case RequestType::LOAD_FROM_DISK:
-            // Allowed even when the slot isn't in memory -- it loads the state from the file.
+            // SAVE/SAVE_TO_DISK always enqueue; LOAD_FROM_DISK is allowed even when the slot isn't in memory
+            // (it loads the state from the file).
             requests.push(request);
             return SaveStateReturn::SUCCESS;
         case RequestType::LOAD:
+            // An in-memory load needs the slot to already exist.
             if (states.contains(request.slot)) {
                 requests.push(request);
                 return SaveStateReturn::SUCCESS;
-            } else {
-                SPDLOG_ERROR("Invalid SaveState slot: {}", request.slot);
-                Ship::Context::GetRawInstance()->GetWindow()->GetGui()->GetGameOverlay()->TextDrawNotification(
-                    1.0f, true, "state slot %u empty", request.slot);
-                return SaveStateReturn::FAIL_INVALID_SLOT;
             }
-            [[unlikely]] default
-                : SPDLOG_ERROR("Invalid SaveState request type: Unknown ({})", static_cast<int>(request.type));
+            SPDLOG_ERROR("Invalid SaveState slot: {}", request.slot);
+            SaveStateNotify("state slot %u empty", request.slot);
+            return SaveStateReturn::FAIL_INVALID_SLOT;
+        [[unlikely]] default:
+            SPDLOG_ERROR("Invalid SaveState request type: Unknown ({})", static_cast<int>(request.type));
             return SaveStateReturn::FAIL_BAD_REQUEST;
     }
 }
@@ -1360,8 +1356,8 @@ void SaveState::LoadTransitionActors(void) {
 
 void SaveState::Save(void) {
     std::unique_lock<std::mutex> Lock(audio.mutex);
-    memcpy(&info->sysHeapCopy, gSystemHeap, SYSTEM_HEAP_SIZE /* sizeof(gSystemHeap) */);
-    memcpy(&info->audioHeapCopy, gAudioHeap, AUDIO_HEAP_SIZE /* sizeof(gAudioContext) */);
+    memcpy(&info->sysHeapCopy, gSystemHeap, SYSTEM_HEAP_SIZE);
+    memcpy(&info->audioHeapCopy, gAudioHeap, AUDIO_HEAP_SIZE);
     // Snapshot the Heap Fragmentation shadow arena (returns 0 if the enhancement is off).
     info->heapFragBlobSize = HeapFragmentation_SerializeShadow(&info->heapFragBlob, (uint32_t)sizeof(info->heapFragBlob));
 

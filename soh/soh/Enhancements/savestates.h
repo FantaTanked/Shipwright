@@ -66,6 +66,9 @@ class SaveStateMgr {
     std::queue<SaveStateRequest> requests;
     std::mutex mutex;
 
+    // Return slot `slot`'s state, lazily creating an empty one if it doesn't exist yet.
+    std::shared_ptr<SaveState>& EnsureSlot(unsigned int slot);
+
   public:
     SaveStateReturn AddRequest(const SaveStateRequest request);
     SaveStateMgr();

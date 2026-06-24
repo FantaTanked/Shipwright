@@ -398,6 +398,7 @@ void GameState_Realloc(GameState* gameState, size_t size) {
     osSyncPrintf("ハイラル再確保 サイズ＝%u バイト\n", size); // "Hyral reallocate size = %u bytes"
     gameArena = GAMESTATE_MALLOC_DEBUG(alloc, size);
     if (gameArena != NULL) {
+        GameInteractor_ExecuteOnGameStateRealloc((uintptr_t)gameArena, size);
         THA_Ct(&gameState->tha, gameArena, size);
         osSyncPrintf("ハイラル再確保成功\n"); // "Successful reacquisition of Hyrule"
     } else {
@@ -531,6 +532,7 @@ void* GameState_Alloc(GameState* gameState, size_t size, char* file, s32 line) {
         osSyncPrintf("game_alloc(%08x) %08x-%08x [%s:%d]\n", size, ret, (uintptr_t)ret + size, file, line);
         osSyncPrintf(VT_RST);
     }
+    GameInteractor_ExecuteOnGameStateAlloc(size);
     return ret;
 }
 

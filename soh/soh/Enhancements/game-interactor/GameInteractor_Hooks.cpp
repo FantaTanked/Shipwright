@@ -400,3 +400,40 @@ void GameInteractor_ExecuteOnRandoEntranceDiscovered(u16 entranceIndex, u8 isRev
     GameInteractor::Instance->ExecuteHooks<GameInteractor::OnRandoEntranceDiscovered>(entranceIndex,
                                                                                       isReversedEntrance);
 }
+
+// MARK: - Heap
+void GameInteractor_ExecuteOnGameStateRealloc(uintptr_t gameArena, size_t size) {
+    GameInteractor::Instance->ExecuteHooks<GameInteractor::OnGameStateRealloc>(gameArena, size);
+}
+
+void GameInteractor_ExecuteOnGameStateAlloc(size_t size) {
+    GameInteractor::Instance->ExecuteHooks<GameInteractor::OnGameStateAlloc>(size);
+}
+
+void GameInteractor_ExecuteOnZeldaArenaInit() {
+    GameInteractor::Instance->ExecuteHooks<GameInteractor::OnZeldaArenaInit>();
+}
+
+void GameInteractor_ExecuteOnZeldaArenaAlloc(uintptr_t ptr, size_t size) {
+    GameInteractor::Instance->ExecuteHooks<GameInteractor::OnZeldaArenaAlloc>(ptr, size);
+}
+
+void GameInteractor_ExecuteOnZeldaArenaAllocR(uintptr_t ptr, size_t size) {
+    GameInteractor::Instance->ExecuteHooks<GameInteractor::OnZeldaArenaAllocR>(ptr, size);
+}
+
+void GameInteractor_ExecuteOnZeldaArenaFree(uintptr_t ptr) {
+    GameInteractor::Instance->ExecuteHooks<GameInteractor::OnZeldaArenaFree>(ptr);
+}
+
+void GameInteractor_ExecuteOnZeldaArenaCleanup() {
+    GameInteractor::Instance->ExecuteHooks<GameInteractor::OnZeldaArenaCleanup>();
+}
+
+void GameInteractor_ExecuteOnActorOverlayLoad(int16_t actorId) {
+    GameInteractor::Instance->ExecuteHooks<GameInteractor::OnActorOverlayLoad>(actorId);
+}
+
+void GameInteractor_ExecuteOnActorOverlayFree(int16_t actorId) {
+    GameInteractor::Instance->ExecuteHooks<GameInteractor::OnActorOverlayFree>(actorId);
+}

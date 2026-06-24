@@ -36,7 +36,14 @@ extern "C" uint32_t gExeSize;  // soh.exe image size (main.c)
 // Magic + format version for on-disk savestate files (cross-session persistence). Bump the version whenever
 // the on-disk layout changes (e.g. when the relocation metadata is added) so older files are cleanly rejected.
 #define SAVESTATE_DISK_MAGIC 0x53534F48u // "SSOH"
-#define SAVESTATE_DISK_VERSION 6u        // v6: body (info blob + relocation table) is zlib-compressed
+#define SAVESTATE_DISK_VERSION 7u        // v7: also carries the Heap Fragmentation shadow-arena snapshot
+
+// The Heap Fragmentation enhancement keeps a host-side "shadow" N64 arena outside the captured game heap;
+// the savestate must snapshot it too or loading a state desyncs it. HeapFragmentation.cpp owns the
+// (de)serialization — we just carry an opaque blob sized for the 4 MiB shadow buffer + its bookkeeping.
+#define HEAP_FRAG_BLOB_CAP (SYSTEM_HEAP_SIZE + 0x40000u)
+extern "C" uint32_t HeapFragmentation_SerializeShadow(void* dst, uint32_t dstCap);
+extern "C" void HeapFragmentation_DeserializeShadow(const void* src, uint32_t size, uint8_t crossRestart);
 
 // FROM z_lights.c
 // I didn't feel like moving it into a header file.
@@ -53,6 +60,10 @@ typedef struct {
 typedef struct SaveStateInfo {
     unsigned char sysHeapCopy[SYSTEM_HEAP_SIZE];
     unsigned char audioHeapCopy[AUDIO_HEAP_SIZE];
+
+    // Heap Fragmentation shadow-arena snapshot (opaque; produced/consumed by HeapFragmentation.cpp).
+    unsigned char heapFragBlob[HEAP_FRAG_BLOB_CAP];
+    uint32_t heapFragBlobSize;
 
     SaveContext saveContextCopy;
     GameInfo gameInfoCopy;
@@ -1287,6 +1298,8 @@ void SaveState::Save(void) {
     std::unique_lock<std::mutex> Lock(audio.mutex);
     memcpy(&info->sysHeapCopy, gSystemHeap, SYSTEM_HEAP_SIZE /* sizeof(gSystemHeap) */);
     memcpy(&info->audioHeapCopy, gAudioHeap, AUDIO_HEAP_SIZE /* sizeof(gAudioContext) */);
+    // Snapshot the Heap Fragmentation shadow arena (returns 0 if the enhancement is off).
+    info->heapFragBlobSize = HeapFragmentation_SerializeShadow(&info->heapFragBlob, (uint32_t)sizeof(info->heapFragBlob));
 
     memcpy(&info->audioContextCopy, &gAudioContext, sizeof(AudioContext));
     memcpy(&info->gActiveSeqsCopy, gActiveSeqs, sizeof(info->gActiveSeqsCopy));
@@ -1321,6 +1334,8 @@ void SaveState::Save(void) {
 void SaveState::Load(bool crossRestart) {
     std::unique_lock<std::mutex> Lock(audio.mutex);
     memcpy(gSystemHeap, &info->sysHeapCopy, SYSTEM_HEAP_SIZE);
+    // Restore the Heap Fragmentation shadow arena (handles the crossRestart-vs-pinned gating internally).
+    HeapFragmentation_DeserializeShadow(&info->heapFragBlob, info->heapFragBlobSize, crossRestart ? 1 : 0);
     if (!crossRestart) {
         // In-session load: restore the saved audio (its pointers are still valid this session).
         memcpy(gAudioHeap, &info->audioHeapCopy, AUDIO_HEAP_SIZE);

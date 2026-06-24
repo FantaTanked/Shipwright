@@ -3077,6 +3077,14 @@ typedef enum {
     // #### `args`
     // - None
     VB_TEMP_B_RESTORE_SWORDLESS,
+
+    // #### `result`
+    // ```c
+    // true
+    // ```
+    // #### `args`
+    // - `*Actor (actor)`
+    VB_LOAD_ACTOR
 } GIVanillaBehavior;
 
 #endif

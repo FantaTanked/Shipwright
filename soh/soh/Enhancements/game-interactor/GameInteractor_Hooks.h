@@ -106,6 +106,17 @@ void GameInteractor_ExecuteOnSeqPlayerInit(int32_t playerIdx, int32_t seqId);
 // MARK: - Rando
 void GameInteractor_ExecuteOnRandoEntranceDiscovered(u16 entranceIndex, u8 isReversedEntrance);
 
+// MARK: - Heap
+void GameInteractor_ExecuteOnGameStateRealloc(uintptr_t gameArena, size_t size);
+void GameInteractor_ExecuteOnGameStateAlloc(size_t size);
+void GameInteractor_ExecuteOnZeldaArenaInit();
+void GameInteractor_ExecuteOnZeldaArenaAlloc(uintptr_t ptr, size_t size);
+void GameInteractor_ExecuteOnZeldaArenaAllocR(uintptr_t ptr, size_t size);
+void GameInteractor_ExecuteOnZeldaArenaFree(uintptr_t ptr);
+void GameInteractor_ExecuteOnZeldaArenaCleanup();
+void GameInteractor_ExecuteOnActorOverlayLoad(int16_t actorId);
+void GameInteractor_ExecuteOnActorOverlayFree(int16_t actorId);
+
 #ifdef __cplusplus
 }
 #endif

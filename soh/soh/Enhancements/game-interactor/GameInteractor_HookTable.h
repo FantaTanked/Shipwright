@@ -96,3 +96,14 @@ DEFINE_HOOK(OnSeqPlayerInit, (int32_t playerIdx, int32_t seqId));
 DEFINE_HOOK(OnRandoSetCheckStatus, (RandomizerCheck rc, RandomizerCheckStatus status));
 DEFINE_HOOK(OnRandoSetIsSkipped, (RandomizerCheck rc, bool isSkipped));
 DEFINE_HOOK(OnRandoEntranceDiscovered, (u16 entranceIndex, u8 isReversedEntrance));
+
+// Heap
+DEFINE_HOOK(OnGameStateRealloc, (uintptr_t gameArena, size_t size));
+DEFINE_HOOK(OnGameStateAlloc, (size_t size));
+DEFINE_HOOK(OnZeldaArenaInit, ());
+DEFINE_HOOK(OnZeldaArenaAlloc, (uintptr_t ptr, size_t size));
+DEFINE_HOOK(OnZeldaArenaAllocR, (uintptr_t ptr, size_t size));
+DEFINE_HOOK(OnZeldaArenaFree, (uintptr_t ptr));
+DEFINE_HOOK(OnZeldaArenaCleanup, ());
+DEFINE_HOOK(OnActorOverlayLoad, (int16_t actorId));
+DEFINE_HOOK(OnActorOverlayFree, (int16_t actorId));

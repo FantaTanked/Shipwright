@@ -43,6 +43,7 @@ tools/asmsplitter/asm/*
 tools/asmsplitter/c/*
 ctx.c
 tools/*dSYM/
+tools/wrongwarp/analyze.py
 graphs/
 .netcoredbg_hist
 

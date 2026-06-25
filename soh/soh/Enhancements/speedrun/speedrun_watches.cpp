@@ -115,9 +115,8 @@ static uint64_t FloatBits(float f) {
     return b;
 }
 
-// Read a catalog variable's current value into `bits`. Returns false if the source is
-// unavailable (e.g. no player/camera during a transition), in which case the value is
-// shown blank rather than read from a dangling pointer.
+// Read a catalog variable's current value into `bits`. Returns false when the source is missing
+// (e.g. no player mid-transition) so the value shows blank instead of dereferencing a dead pointer.
 static bool ReadSource(SpeedrunWatchSource src, PlayState* play, uint64_t* bits) {
     Player* player = (play != nullptr) ? GET_PLAYER(play) : nullptr;
     switch (src) {

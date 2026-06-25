@@ -1,27 +1,5 @@
-// speedrun: "speedrun mode" practice features, modelled on the GameCube practice ROM (speedrun).
-// When the speedrun toggle is on, the player can drive savestates with the controller alone.
-//
-//   In game (menu closed):
-//     - D-pad Left  : save the current savestate slot
-//     - D-pad Right : load the current savestate slot
-//     - R + C-Down  : open the menu
-//   Menu (main screen):
-//     - D-pad Up/Down : move the cursor
-//     - C-Down        : confirm the highlighted entry
-//     - D-pad L/R     : change slot (while on the "Slot" row)
-//     - R + C-Down    : close the menu
-//   Menu (import screen):
-//     - D-pad Up/Down : pick a savestate file
-//     - C-Down        : import the highlighted file
-//     - B             : back to the main screen
-//     - R + C-Down    : close the menu
-//   While the menu is open the game receives no input (Link stays put, no pause).
-//
-// Export still uses the native OS save dialog (mouse/keyboard); import is a controller-
-// navigable list of the .st files in the savestates/ folder.
-//
-// The menu is a speedrun-style text overlay drawn on the ImGui foreground draw list; we
-// own the controller navigation rather than routing through ImGui's widget nav.
+// Controller-driven speedrun practice overlay modelled on the GameCube practice ROM: savestates, warps, watches.
+// The menu is a text overlay drawn on the ImGui foreground draw list with our own controller navigation.
 
 #include <atomic>
 #include <algorithm>
@@ -55,9 +33,7 @@ extern PlayState* gPlayState;
 #define CVAR_SPEEDRUN_MODE_DEFAULT 0
 #define CVAR_SPEEDRUN_MODE_VALUE CVarGetInteger(CVAR_SPEEDRUN_MODE_NAME, CVAR_SPEEDRUN_MODE_DEFAULT)
 
-// The speedrun-style top-level menu. Everything is greyed out (a stub) except "return"
-// (closes) and "macro", which opens our savestate section -- mirroring speedrun, where
-// save/load states live under the macro page.
+// Top-level menu. Most rows are greyed-out stubs; "return" closes, "macro" opens the savestate section.
 struct SpeedrunRootItem {
     const char* label;
     bool enabled;
@@ -98,9 +74,8 @@ struct SpeedrunImportFile {
     std::string path;  // File: the file; Dir: the subfolder; Up: the parent folder -- all full paths
 };
 
-// Shared between the game-thread update hook and the GUI-thread draw. The scalars are
-// atomic; the import file list is guarded by a mutex (it's resized on the game thread
-// while the draw thread iterates it).
+// Shared between the game-thread update hook and the GUI-thread draw: scalars are atomic, and
+// the import file list (resized on the game thread, iterated on the draw thread) is mutex-guarded.
 static std::atomic<bool> sMenuOpen{ false };
 static std::atomic<bool> sPaused{ false }; // game frozen via the native FrameAdvance gate (drives the pause icon)
 static std::atomic<int> sScreen{ SPEEDRUN_SCREEN_ROOT };
@@ -109,9 +84,8 @@ static std::atomic<int> sImportSel{ 0 };
 static std::mutex sImportMutex;
 static std::vector<SpeedrunImportFile> sImportFiles;
 
-// Warps browser: one cursor per nav level, plus the chosen category/place we descended
-// into. The category/place/entrance strings come from read-only static tables (see
-// Warping.cpp), so the draw thread can query them directly without a snapshot/mutex.
+// Warps browser: one cursor per nav level plus the chosen category/place. Names come from read-only
+// static tables, so the draw thread can query them directly without a snapshot or mutex.
 static std::atomic<int> sWarpCatSel{ 0 };      // cursor on the category screen
 static std::atomic<int> sWarpPlaceSel{ 0 };    // cursor on the place screen
 static std::atomic<int> sWarpEntranceSel{ 0 }; // cursor on the entrance screen
@@ -128,28 +102,23 @@ static std::atomic<int> sWatchEditSel{ 0 };       // cursor on the edit screen
 static std::atomic<int> sWatchEditIdx{ 0 };       // active watch being edited
 static std::atomic<bool> sWatchPositioning{ false };
 
-// The overlay window. Kept hidden unless the menu is open, so it never participates in
-// the draw loop while closed (an always-shown borderless window left a black artifact
-// when the OS window was moved/resized).
+// The overlay window. Kept hidden unless the menu is open so it never draws while closed
+// (an always-shown borderless window leaves a visual artifact when the OS window is moved/resized).
 static std::shared_ptr<Ship::GuiWindow> sOverlay;
 
 static unsigned int SpeedrunCurrentSlot() {
     return OTRGlobals::Instance->gSaveStateMgr->GetCurrentSlot();
 }
 
-// Name a slot suggests in the export dialog. Deliberately has NO ".st" extension: the dialog appends it
-// (see SpeedrunPromptExportStatePath), so you can just type a name like "shadow_temple" without working around
-// the suffix.
+// Default name suggested in the export dialog, with no ".st" extension: the dialog appends it,
+// so you can type a plain name without working around the suffix.
 static std::string SpeedrunSlotFilePath(unsigned int slot) {
     return (std::filesystem::path(SaveStateMgr::GetStateDirectory()) / ("savestate_" + std::to_string(slot)))
         .string();
 }
 
-// D-pad up/down auto-repeat: navigation is edge-triggered (input->press), so holding a
-// direction would otherwise move one row and stop. Each frame the menu is open we track
-// how long up/down has been held and, past an initial delay, synthesize extra press
-// events at a fixed interval so the cursor keeps scrolling. Counts are in game frames
-// (~20/s), so ~0.4s before repeat then ~10 rows/s.
+// D-pad up/down auto-repeat: navigation is edge-triggered, so after an initial delay we synthesize extra
+// press events at a fixed interval while up/down is held, in game frames (~20/s).
 static int sDpadRepeatDir = 0;    // -1 = up held, +1 = down held, 0 = neither
 static int sDpadHeldFrames = 0;   // frames the current direction has been held
 static void SpeedrunApplyDpadRepeat(Input* input) {
@@ -179,9 +148,8 @@ static void SpeedrunSuppressDpad(Input* input) {
     input->rel.button &= ~dpad;
 }
 
-// Populate the import list from `dir`: a ".." entry (unless already at the savestates root) so you can go back
-// up, then subfolders, then .st files -- folders and files each sorted alphabetically. This lets you
-// organise states into folders (e.g. an "MST" folder) and browse them like gz does.
+// Populate the import list from `dir`: a ".." entry (unless at the savestates root), then subfolders,
+// then .st files, with folders and files each sorted alphabetically.
 static void SpeedrunScanImportDir(const std::filesystem::path& dir) {
     const std::filesystem::path root = SaveStateMgr::GetStateDirectory();
     std::vector<SpeedrunImportFile> dirs, files;
@@ -611,10 +579,8 @@ static void OnGameStateMainStartSpeedrunMode() {
     const bool rHeld = CHECK_BTN_ALL(input->cur.button, BTN_R);
     const bool cDownPressed = CHECK_BTN_ALL(input->press.button, BTN_CDOWN);
 
-    // Drive SoH's native FrameAdvance gate from our own sPaused flag every frame. sPaused lives only in this
-    // overlay -- it is NOT captured by the savestate (PlayState.frameAdvCtx IS) -- so the freeze state stays
-    // independent of save/load: saving while paused then loading later won't restore the pause, and a live pause
-    // is unaffected by a load.
+    // Drive the native FrameAdvance gate from our own sPaused flag each frame. sPaused isn't part of the
+    // savestate, so the freeze state stays independent of save/load.
     gPlayState->frameAdvCtx.enabled = sPaused.load() ? 1 : 0;
 
     if (!sMenuOpen.load()) {
@@ -631,9 +597,8 @@ static void OnGameStateMainStartSpeedrunMode() {
         } else if (CHECK_BTN_ALL(input->press.button, BTN_DRIGHT)) {
             OTRGlobals::Instance->gSaveStateMgr->AddRequest({ SpeedrunCurrentSlot(), RequestType::LOAD });
         } else if (CHECK_BTN_ALL(input->press.button, BTN_DUP)) {
-            // Frame advance: first press freezes on the current frame; each further press steps one frame. The
-            // tick CVar self-clears after one frame (z_frame_advance.c); the freeze itself is driven above from
-            // sPaused (so a tick lands the same frame, since this hook runs before Play_Update).
+            // Frame advance: first press freezes on the current frame, each further press steps one frame.
+            // The tick CVar self-clears after one frame; the freeze itself is driven above from sPaused.
             if (sPaused.load()) {
                 CVarSetInteger(CVAR_DEVELOPER_TOOLS("FrameAdvanceTick"), 1); // step exactly one frame
             } else {
@@ -695,10 +660,8 @@ class SpeedrunMenuOverlay final : public Ship::GuiWindow {
         ImGui::SetWindowPos(vp->Pos);
         ImGui::SetWindowSize(vp->Size);
 
-        // The overlay font is loaded at a fixed 12px, so it shrinks on high-res displays.
-        // Scale both the glyphs (SetWindowFontScale) and our layout coordinates (mScale)
-        // by the viewport height so the menu stays readable at 1080p/1440p/4K. The 1.5
-        // floor keeps it legible in small windows.
+        // The overlay font is a fixed pixel size, so scale both the glyphs and our layout coordinates by
+        // viewport height to stay readable on high-res displays. The 1.5 floor keeps it legible when small.
         mScale = std::max(1.5f, vp->Size.y / 540.0f);
         ImGui::SetWindowFontScale(mScale);
 
@@ -706,7 +669,7 @@ class SpeedrunMenuOverlay final : public Ship::GuiWindow {
         DrawWatches(overlay);
 
         // Frame-advance pause indicator: two bars on a dark backdrop, top-centre, shown whenever the game is
-        // frozen -- so you can see the pause is active even with the menu closed.
+        // frozen, so the pause is visible even with the menu closed.
         if (sPaused.load()) {
             ImDrawList* dl = ImGui::GetForegroundDrawList();
             const float cx = vp->Pos.x + vp->Size.x * 0.5f;
@@ -756,10 +719,8 @@ class SpeedrunMenuOverlay final : public Ship::GuiWindow {
     ImVec2 mDragLastMouse{ 0.0f, 0.0f };
     float mDragX = 0.0f, mDragY = 0.0f; // live unscaled position while dragging
 
-    // Draws a speedrun-style list: the overlay's pixel font ("Press Start 2P") with a drop
-    // shadow, left-aligned near the left edge and vertically about a fifth down, the
-    // selected row tinted speedrun-blue (no cursor arrow). If `enabled` is supplied, disabled
-    // rows are dimmed (a greyed-out speedrun stub).
+    // Draws a list in the overlay's pixel font, anchored near the left edge about a fifth down, with the
+    // selected row tinted blue. If `enabled` is supplied, disabled rows are dimmed.
     void DrawList(const std::shared_ptr<Ship::GameOverlay>& overlay, const std::vector<std::string>& rows, int sel,
                   const std::vector<bool>* enabled = nullptr) {
         const ImVec4 white(1.0f, 1.0f, 1.0f, 1.0f);
@@ -880,14 +841,8 @@ class SpeedrunMenuOverlay final : public Ship::GuiWindow {
         DrawList(overlay, rows, sWarpEntranceSel.load());
     }
 
-    // On-screen watch values, drawn every frame at each watch's position (speedrun-style). The
-    // watch being positioned (controller) or dragged (mouse) is tinted speedrun-blue. Positions
-    // are stored unscaled, so multiply by the resolution scale to keep placement
-    // consistent across displays.
-    //
-    // Mouse: hold Alt and left-drag a watch to fine-tune its position. The drag runs on
-    // this (draw) thread; positions are pushed to the game thread via SpeedrunWatch_RequestMove,
-    // and persisted on release.
+    // Draws each watch's value at its stored (unscaled) position; hold Alt and left-drag one to reposition it.
+    // The active/dragged watch is tinted blue; drag positions are pushed to the game thread and saved on release.
     void DrawWatches(const std::shared_ptr<Ship::GameOverlay>& overlay) {
         const std::vector<SpeedrunWatchDisplay> snap = SpeedrunWatch_Snapshot();
         const ImVec4 white(1.0f, 1.0f, 1.0f, 1.0f);
@@ -898,9 +853,8 @@ class SpeedrunMenuOverlay final : public Ship::GuiWindow {
         ImGuiIO& io = ImGui::GetIO();
         const bool altDrag = io.KeyAlt && io.MouseDown[0];
 
-        // Drags snap to an 8px grid so watches line up with each other; hold Shift for
-        // free (un-snapped) fine positioning. mDragX/Y track the raw accumulated drag;
-        // the snapped value is what we draw and store.
+        // Drags snap to an 8px grid so watches line up; hold Shift for free fine positioning. mDragX/Y track
+        // the raw accumulated drag, while the snapped value is what we draw and store.
         const float kGrid = 8.0f;
         const bool freeMove = io.KeyShift;
         auto gridSnap = [&](float v) { return freeMove ? v : std::round(v / kGrid) * kGrid; };

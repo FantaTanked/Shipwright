@@ -3,10 +3,8 @@
 
 #include <string>
 
-// speedrun: thin wrappers around the native file dialog (portable-file-dialogs).
-// Kept in their own translation unit because pfd pulls in the Windows shell
-// headers, which define symbols (e.g. PS_NONE) that collide with the game's
-// enums. Callers only see plain std::string and avoid that pollution.
+// Thin wrappers around the native file dialog, in their own translation unit because the dialog library pulls
+// in Windows shell headers whose symbols collide with the game's enums. Callers only see plain std::string.
 
 // Open a native "save" dialog for exporting a savestate, defaulting to
 // `defaultPath`. Returns the chosen path, or "" if the user cancelled.

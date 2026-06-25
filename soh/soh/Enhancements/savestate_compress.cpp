@@ -10,9 +10,8 @@ std::vector<uint8_t> Compress(const void* in, size_t inSize) {
     if (in == nullptr || inSize == 0 || inSize > 0x7FFFFFFFu) {
         return {};
     }
-    // SCompCompress needs a worst-case (input-sized) scratch buffer, but the result is ~1-2%. Use a default-
-    // initialized array so we don't pay an input-sized zero-fill the compressor immediately overwrites, then
-    // copy only the compressed prefix into the returned vector.
+    // SCompCompress needs a worst-case (input-sized) scratch buffer; use an uninitialized array to skip a
+    // pointless zero-fill, then copy only the compressed prefix into the returned vector.
     std::unique_ptr<uint8_t[]> scratch(new uint8_t[inSize]);
     int outLen = (int)inSize;
     // Level is ignored by StormLib's zlib path (it uses zlib's default); pass 0.

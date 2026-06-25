@@ -134,13 +134,8 @@ bool WarpToDefaultIndex(size_t index) {
     return true;
 }
 
-// ---------------------------------------------------------------------------------------
-// speedrun-style hierarchical warp browser (category -> place -> entrance).
-//
-// Scene indices below are 0-based into the curated sBetterScenes table (z_select.c); they
-// equal the table's "N:" number minus one. Grottos (47-49) use a different loader and the
-// debug scene (50) can crash, so both are intentionally excluded.
-// ---------------------------------------------------------------------------------------
+// Hierarchical warp browser (category -> place -> entrance). Scene indices are 0-based into the
+// curated sBetterScenes table (z_select.c); grottos and the debug scene are intentionally excluded.
 
 namespace {
 

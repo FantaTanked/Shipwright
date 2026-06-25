@@ -19,9 +19,8 @@ size_t Animation::GetPointerSize() {
     }
 }
 
-// AnimationHeader.frameData/jointIndices (Normal) and TransformUpdateIndex.refIndex/transformData/copyValues
-// (Curve) point into these separately-allocated vectors. Fixed positions; empties are skipped by the savestate
-// layer. (Link/Player animations are the separate PlayerAnimation resource type, a Pattern-1 main payload.)
+// The animation header's data fields point into these separately-allocated vectors; report them so the
+// savestate layer relocates them after a restart. Positions are fixed; the layer skips any that are empty.
 std::vector<std::pair<void*, size_t>> Animation::GetSubAllocations() {
     return {
         { rotationValues.data(), rotationValues.size() * sizeof(uint16_t) },

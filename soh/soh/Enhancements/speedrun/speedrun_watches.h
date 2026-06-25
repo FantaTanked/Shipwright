@@ -5,15 +5,8 @@
 #include <string>
 #include <vector>
 
-// speedrun-style memory watches, adapted for ship. The GameCube practice ROM (speedrun) watches an
-// arbitrary N64 RAM address + type and draws the value on screen. ship is a native port
-// with no flat N64 address space, so instead each watch points at a curated named game
-// variable (resolved through C struct pointers); the type formatting, on-screen display
-// and controller repositioning mirror speedrun.
-//
-// Threading: the active watch list is mutated and read only on the game thread (the speedrun
-// input hook). Once per frame SpeedrunWatch_UpdateSnapshot() formats the live values into a
-// mutex-guarded snapshot that the GUI/draw thread renders via SpeedrunWatch_Snapshot().
+// On-screen memory watches. With no flat N64 address space, each watch points at a curated named
+// game variable; the game thread builds a mutex-guarded snapshot each frame that the draw thread reads.
 
 // Value display types, ported from speedrun (watch_type).
 enum SpeedrunWatchType {
@@ -41,9 +34,8 @@ bool SpeedrunWatch_Add(int catalogIndex); // false if the list is full
 void SpeedrunWatch_Remove(int i);
 void SpeedrunWatch_CycleType(int i, int dir); // cycle same-byte-size interpretations
 void SpeedrunWatch_Nudge(int i, float dx, float dy);
-// Request a watch be moved to an absolute (unscaled) position. Safe to call from the
-// draw thread (e.g. mouse drag); the game thread applies it on the next snapshot. Pass
-// save=true on drag release to persist the new position.
+// Move a watch to an absolute (unscaled) position; safe to call from the draw thread (e.g. mouse drag),
+// applied by the game thread on the next snapshot. Pass save=true on drag release to persist it.
 void SpeedrunWatch_RequestMove(int i, float x, float y, bool save);
 // Load/save the active list to a CVar so watches persist across launches.
 void SpeedrunWatch_Load();

@@ -9,9 +9,8 @@ size_t CollisionHeader::GetPointerSize() {
     return sizeof(collisionHeaderData);
 }
 
-// The header struct's pointer fields (vtxList/polyList/surfaceTypeList/cameraDataList/waterBoxes, + each
-// CamData's camPosData) are wired to these separately-allocated vectors. Report them at FIXED positions so the
-// save/load sub-allocation indices line up regardless of which are empty (the savestate layer skips size-0).
+// The header's pointer fields point into these separately-allocated vectors; report them so the savestate
+// layer relocates them after a restart. Positions are fixed; the layer skips any that are empty.
 std::vector<std::pair<void*, size_t>> CollisionHeader::GetSubAllocations() {
     return {
         { vertices.data(), vertices.size() * sizeof(Vec3s) },

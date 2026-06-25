@@ -23,9 +23,8 @@ static bool EndsWithStateExt(const std::string& s) {
 
 std::string SpeedrunPromptExportStatePath(const std::string& defaultPath) {
     std::string path = pfd::save_file("Export savestate", defaultPath, kStateFilters).result();
-    // Let the user type just a name (e.g. "shadow_temple") and always end up with ".st", without having
-    // to type or preserve the extension. Append only when it's actually missing (case-insensitive), so a name
-    // the dialog already completed isn't doubled.
+    // Let the user type just a name and still get a ".st" file. Append the extension only when it's missing
+    // (case-insensitive) so we don't double it.
     if (!path.empty() && !EndsWithStateExt(path)) {
         path += kStateExt;
     }

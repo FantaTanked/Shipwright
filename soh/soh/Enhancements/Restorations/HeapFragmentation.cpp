@@ -774,8 +774,8 @@ static void HeapFragmentation_OnSceneInit(int16_t sceneNum) {
 }
 
 // === Savestate integration =====================================================================
-// Serialize the shadow heap (pinned buffer + Arena structs + the two maps) into a SaveStateInfo blob. The
-// fixed-VA pinning keeps every pointer valid after restore with no relocation. Returns bytes written.
+// Serialize the shadow heap (pinned buffer + Arena structs + the two maps) into a SaveStateInfo blob; the
+// fixed-address pinning keeps every pointer valid after restore. Returns bytes written.
 extern "C" uint32_t HeapFragmentation_SerializeShadow(void* dst, uint32_t dstCap) {
     if (sHeapFragmentationHeap == nullptr || !__osMallocIsInitialized(&sHeapFragmentationSystemArena)) {
         return 0;

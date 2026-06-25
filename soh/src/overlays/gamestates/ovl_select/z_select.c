@@ -863,9 +863,8 @@ static BetterSceneSelectGrottoData sBetterGrottos[] = {
     // clang-format on
 };
 
-// speedrun: read-only accessors over the curated scene list, so features like the speedrun
-// warps menu can reuse it (name + a sensible default entrance per scene) without
-// duplicating the table.
+// speedrun: read-only accessors over the curated scene list, so the warps menu can reuse it (scene/entrance
+// names + a default entrance) without duplicating the table.
 s32 SceneSelect_GetSceneCount(void) {
     return ARRAY_COUNT(sBetterScenes);
 }

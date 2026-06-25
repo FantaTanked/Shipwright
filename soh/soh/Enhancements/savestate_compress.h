@@ -5,10 +5,8 @@
 #include <cstdint>
 #include <vector>
 
-// Thin zlib compress/decompress over StormLib's SComp API, kept in its own translation unit so StormLib.h (and
-// the platform headers it drags in) don't leak into savestates.cpp -- same isolation reasoning as
-// savestate_filedialog. Used to shrink the savestate disk blob: it's ~8.5 MiB but roughly half zeros (the
-// system + audio heaps are mostly unused at any instant), so zlib takes it to ~1-2% of its size.
+// Thin zlib compress/decompress over StormLib's SComp API, in its own translation unit so StormLib.h doesn't
+// leak elsewhere. Shrinks the ~8.5 MiB savestate blob (roughly half zeros) to ~1-2% of its size.
 namespace SaveStateCompress {
 
 // Compress `inSize` bytes from `in`. Returns the compressed bytes, or an EMPTY vector if compression failed or

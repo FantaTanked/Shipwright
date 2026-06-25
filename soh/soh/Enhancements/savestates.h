@@ -30,10 +30,8 @@ typedef struct SaveStateHeader {
     uint64_t bodyCompressedSize;   // bytes of the body region on disk (== bodyUncompressedSize when stored raw)
 } SaveStateHeader;
 
-// One relocatable block at save time: a loaded resource's main payload, or one of its sub-allocations. On load
-// the resource is reloaded by `name`; `subIndex == -1` resolves to its main payload (GetRawPointer), `subIndex
-// >= 0` to the i-th entry of GetSubAllocations() (e.g. a skeleton's limb array). Captured pointers in
-// [oldBase, oldBase+oldSize) relocate by (newBase - oldBase). Fixed-size record => a trivial on-disk array.
+// One relocatable block saved for a resource: subIndex == -1 is its main payload, subIndex >= 0 is the i-th
+// sub-allocation. On load the resource is reloaded by name and captured pointers within the block are relocated.
 typedef struct SaveStateResEntry {
     uint64_t oldBase;  // host VA of this block at save time
     uint64_t oldSize;  // byte size of this block at save time
@@ -77,9 +75,8 @@ class SaveStateMgr {
     void SetCurrentSlot(unsigned int slot);
     unsigned int GetCurrentSlot(void);
 
-    // Speedrun practice menu: export/import a slot to/from an arbitrary file. Routed through the same
-    // cross-restart disk path (pointer relocation) as SAVE_TO_DISK/LOAD_FROM_DISK, so an imported state is
-    // ASLR-relocated on load exactly like a per-slot disk state. Both enqueue a request (run on the graph thread).
+    // Export/import a slot to/from an arbitrary file, routed through the same disk path as the per-slot saves
+    // so an imported state is pointer-relocated on load. Both enqueue a request that runs on the graph thread.
     static std::string GetStateDirectory(void);
     SaveStateReturn ExportState(unsigned int slot, const std::string& path);
     SaveStateReturn ImportState(unsigned int slot, const std::string& path);

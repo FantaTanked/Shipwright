@@ -16,11 +16,6 @@ s32 gScreenWidth = SCREEN_WIDTH;
 s32 gScreenHeight = SCREEN_HEIGHT;
 size_t gSystemHeapSize = 0;
 
-// soh.exe image base + size, captured at boot. Used by the savestate layer to relocate code/function
-// pointers across a restart (ASLR shifts the whole image by a single delta).
-uintptr_t gExeBase = 0;
-uint32_t gExeSize = 0;
-
 PreNmiBuff* gAppNmiBufferPtr;
 SchedContext gSchedContext;
 PadMgr gPadMgr;
@@ -71,23 +66,6 @@ int main(int argc, char* argv[]) {
     BootCommands_Init();
 
     Heaps_Alloc();
-    {
-        // Verify the game heaps landed at their fixed virtual addresses (the cross-session savestate
-        // prerequisite). Call lusprintf directly at info level (2) so it reaches the log -- osSyncPrintf is
-        // compiled out when game-prints are off. %p, not %08x, so the full 64-bit address is shown.
-        extern u8 gHeapsArePinned;
-        extern void lusprintf(const char* file, int line, int logLevel, const char* fmt, ...);
-        lusprintf(__FILE__, __LINE__, 2, "[Heaps] gSystemHeap=%p gAudioHeap=%p pinned=%d", (void*)gSystemHeap,
-                  (void*)gAudioHeap, (int)gHeapsArePinned);
-
-        // Capture the EXE image base + size for cross-restart code-pointer relocation.
-        HMODULE hExe = GetModuleHandleW(NULL);
-        gExeBase = (uintptr_t)hExe;
-        IMAGE_DOS_HEADER* dos = (IMAGE_DOS_HEADER*)hExe;
-        IMAGE_NT_HEADERS* nt = (IMAGE_NT_HEADERS*)((BYTE*)hExe + dos->e_lfanew);
-        gExeSize = nt->OptionalHeader.SizeOfImage;
-        lusprintf(__FILE__, __LINE__, 2, "[Heaps] exeBase=%p exeSize=0x%x", (void*)gExeBase, gExeSize);
-    }
     Main(0);
     DeinitOTR();
     Heaps_Free();

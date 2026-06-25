@@ -20,10 +20,8 @@ std::vector<std::string> GetDefaultWarpNames();
 // false if out of range.
 bool WarpToDefaultIndex(size_t index);
 
-// speedrun-style hierarchical warp browser: category -> place -> entrance. Most categories
-// (Dungeons, Towns, Houses, ...) descend cat -> place -> entrance. "Flat" categories
-// (Bosses) skip the entrance level: the place row is itself the warp target. The menu
-// deals only in (category, place, entrance) ints and the strings these return.
+// Hierarchical warp browser: category -> place -> entrance. "Flat" categories (e.g. Bosses) skip the
+// entrance level, so the place row is itself the warp target. Callers use only the ints and strings below.
 int         SpeedrunWarp_CategoryCount();
 const char* SpeedrunWarp_CategoryName(int cat);
 bool        SpeedrunWarp_CategoryIsFlat(int cat); // true: the place row warps directly (Bosses)

@@ -36,6 +36,21 @@ s32 Object_Spawn(ObjectContext* objectCtx, s16 objectId) {
 // SOH [Port] Track when objects are first loaded for a scene
 static u8 sObjectFirstUpdateSkippedForScene = false;
 
+// SOH [Restoration] AsyncObjectLoad: approximate N64 multi-frame object DMA timing so a freshly
+// spawned actor keeps its Init deferred for a few frames (re-enables load/unload-desync tricks).
+// Off by default -> timer stays 0 -> original single-frame behavior. Constants tunable vs console.
+#define OBJECT_DMA_BASE_FRAMES 1
+#define OBJECT_DMA_BYTES_PER_FRAME 0x14000
+static s16 sObjectLoadTimer[OBJECT_EXCHANGE_BANK_MAX];
+
+// Begin a slot's faithful object-load countdown. Non-static so the live OTR insert path
+// (OTRfunc_800982FC in z_scene_otr.cpp) can set this file's static timer array.
+void Object_StartFaithfulLoad(s32 bankIndex, s16 objectId) {
+    size_t size = gObjectTable[objectId].vromEnd - gObjectTable[objectId].vromStart;
+    s16 baseFrames = CVarGetInteger(CVAR_ENHANCEMENT("AsyncObjectLoadFrames"), OBJECT_DMA_BASE_FRAMES);
+    sObjectLoadTimer[bankIndex] = baseFrames + (s16)(size / OBJECT_DMA_BYTES_PER_FRAME);
+}
+
 void Object_InitBank(PlayState* play, ObjectContext* objectCtx) {
     PlayState* play2 = play; // Needs to be a new variable to match (possibly a sub struct?)
     size_t spaceSize;
@@ -65,6 +80,7 @@ void Object_InitBank(PlayState* play, ObjectContext* objectCtx) {
     for (i = 0; i < OBJECT_EXCHANGE_BANK_MAX; i++) {
         objectCtx->status[i].id = OBJECT_INVALID;
         objectCtx->status[i].segment = NULL;
+        sObjectLoadTimer[i] = 0; // SOH [Restoration] AsyncObjectLoad
     }
 
     osSyncPrintf(VT_FGCOL(GREEN));
@@ -94,6 +110,9 @@ void Object_UpdateBank(ObjectContext* objectCtx) {
         return;
     }
 
+    // SOH [Restoration] AsyncObjectLoad: when on, hold objects "not loaded" until their timer expires.
+    s32 asyncLoad = CVarGetInteger(CVAR_ENHANCEMENT("AsyncObjectLoad"), 0);
+
     for (i = 0; i < objectCtx->num; i++) {
         if (status->id < 0) {
             /*
@@ -108,7 +127,11 @@ void Object_UpdateBank(ObjectContext* objectCtx) {
                 status->id = -status->id;
             }
             */
-            status->id = -status->id;
+            if (asyncLoad && sObjectLoadTimer[i] > 0) {
+                sObjectLoadTimer[i]--; // SOH [Restoration] AsyncObjectLoad: still "DMA-ing", stay unloaded
+            } else {
+                status->id = -status->id;
+            }
         }
         status++;
     }

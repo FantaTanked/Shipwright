@@ -135,10 +135,12 @@ bool Scene_CommandMeshHeader(PlayState* play, SOH::ISceneCommand* cmd) {
 }
 
 extern "C" void* func_800982FC(ObjectContext* objectCtx, s32 bankIndex, s16 objectId);
+extern "C" void Object_StartFaithfulLoad(s32 bankIndex, s16 objectId);
 
 bool OTRfunc_800982FC(ObjectContext* objectCtx, s32 bankIndex, s16 objectId) {
 
     objectCtx->status[bankIndex].id = -objectId;
+    Object_StartFaithfulLoad(bankIndex, objectId); // SOH [Restoration] AsyncObjectLoad
 
     return false;
 }

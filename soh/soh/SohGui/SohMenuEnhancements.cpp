@@ -1240,6 +1240,22 @@ void SohMenu::AddMenuEnhancements() {
         .Options(CheckboxOptions().Tooltip(
             "Restore bugs relating to fragmentation of the heap, stopping certain actors from spawning, such as parts "
             "of the graveyard and the light trial block. (May not 100%% accurately emulate the heap.)"));
+    AddWidget(path, "Async Object Loading", WIDGET_CVAR_CHECKBOX)
+        .CVar(CVAR_ENHANCEMENT("AsyncObjectLoad"))
+        .Options(CheckboxOptions().Tooltip(
+            "Restore N64 multi-frame object (DMA) load timing. A freshly spawned actor stays uninitialized for a few "
+            "frames while its object 'loads', re-enabling load/unload-desync tricks such as the Goron City dynapoly "
+            "collision unload (Darunia statue). May cause brief object pop-in on room/scene loads."));
+    AddWidget(path, "Async Object Load: %d frames", WIDGET_CVAR_SLIDER_INT)
+        .CVar(CVAR_ENHANCEMENT("AsyncObjectLoadFrames"))
+        .Options(IntSliderOptions()
+                     .Min(0)
+                     .Max(8)
+                     .DefaultValue(1)
+                     .Format("%d frames")
+                     .Tooltip("Base frames a freshly inserted object stays 'loading' when Async Object Loading is on. "
+                              "The smallest value that triggers a given trick is the faithful one; higher just adds "
+                              "load delay (more pop-in risk). 0 behaves like off."));
 
     AddWidget(path, "Misc Restorations", WIDGET_SEPARATOR_TEXT);
     AddWidget(path, "Fix L&Z Page Switch in Pause Menu", WIDGET_CVAR_CHECKBOX)

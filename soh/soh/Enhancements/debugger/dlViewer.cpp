@@ -1,4 +1,5 @@
 #include "actorViewer.h"
+#include "soh/Enhancements/speedrun/Speedrun.h"
 #include "soh/util.h"
 #include "soh/SohGui/UIWidgets.hpp"
 #include "soh/SohGui/SohGui.hpp"
@@ -90,7 +91,7 @@ void PerformDisplayListSearch() {
 }
 
 void DLViewerWindow::DrawElement() {
-    ImGui::BeginDisabled(CVarGetInteger(CVAR_SETTING("DisableChanges"), 0));
+    ImGui::BeginDisabled((CVarGetInteger(CVAR_SETTING("DisableChanges"), 0) || Speedrun_IsLockActive()));
     // Debounce the search field as listing otr files is expensive
     UIWidgets::PushStyleInput(THEME_COLOR);
     ImGui::PushFont(OTRGlobals::Instance->fontMonoLarger);

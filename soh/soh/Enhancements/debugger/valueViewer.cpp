@@ -1,4 +1,5 @@
 #include "valueViewer.h"
+#include "soh/Enhancements/speedrun/Speedrun.h"
 #include "soh/SohGui/UIWidgets.hpp"
 #include "soh/SohGui/SohGui.hpp"
 #include "soh/OTRGlobals.h"
@@ -175,7 +176,7 @@ void RegisterValueViewerHooks() {
 static RegisterShipInitFunc initFunc(RegisterValueViewerHooks, { CVAR_NAME });
 
 void ValueViewerWindow::DrawElement() {
-    ImGui::BeginDisabled(CVarGetInteger(CVAR_SETTING("DisableChanges"), 0));
+    ImGui::BeginDisabled((CVarGetInteger(CVAR_SETTING("DisableChanges"), 0) || Speedrun_IsLockActive()));
     UIWidgets::CVarCheckbox("Enable Printing", CVAR_NAME, UIWidgets::CheckboxOptions().Color(THEME_COLOR));
 
     ImGui::BeginGroup();

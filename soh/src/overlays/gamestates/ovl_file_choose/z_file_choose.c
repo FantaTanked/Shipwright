@@ -26,7 +26,7 @@
 #include "soh/ShipUtils.h"
 
 #define MIN_QUEST (ResourceMgr_GameHasOriginal() ? QUEST_NORMAL : QUEST_MASTER)
-#define MAX_QUEST QUEST_BOSSRUSH
+#define MAX_QUEST QUEST_SPEEDRUN
 
 void Sram_InitDebugSave(void);
 void Sram_InitBossRushSave();
@@ -1809,6 +1809,18 @@ void FileChoose_DrawWindowContents(GameState* thisx) {
                     ResourceMgr_GameHasOriginal() ? gTitleZeldaShieldLogoTex : gTitleZeldaShieldLogoMQTex, 160, 160);
                 FileChoose_DrawImageRGBA32(this->state.gfxCtx, 182, 180, gTitleBossRushSubtitleTex, 128, 32);
                 break;
+
+            case QUEST_SPEEDRUN:
+                gDPSetPrimColor(POLY_OPA_DISP++, 0, 0, 255, 255, 255, this->logoAlpha);
+                FileChoose_DrawTextureI8(this->state.gfxCtx, gTitleTheLegendOfTextTex, 72, 8, 156, 108, 72, 8, 1024,
+                                         1024);
+                FileChoose_DrawTextureI8(this->state.gfxCtx, gTitleOcarinaOfTimeTMTextTex, 96, 8, 154, 163, 96, 8, 1024,
+                                         1024);
+                FileChoose_DrawImageRGBA32(
+                    this->state.gfxCtx, 160, 135,
+                    ResourceMgr_GameHasOriginal() ? gTitleZeldaShieldLogoTex : gTitleZeldaShieldLogoMQTex, 160, 160);
+                FileChoose_DrawImageRGBA32(this->state.gfxCtx, 182, 180, gTitleSpeedrunSubtitleTex, 128, 32);
+                break;
         }
     } else if (this->configMode == CM_BOSS_RUSH_MENU) {
         FileChoose_DrawBossRushMenuWindowContents(this);
@@ -2509,8 +2521,12 @@ void FileChoose_LoadGame(GameState* thisx) {
     gSaveContext.fileNum = this->buttonIndex;
     gSaveContext.gameMode = GAMEMODE_NORMAL;
 
-    if ((this->buttonIndex == FS_BTN_SELECT_FILE_1 && CVarGetInteger(CVAR_DEVELOPER_TOOLS("DebugEnabled"), 0)) ||
-        this->buttonIndex == 0xFF) {
+    // Speedrun files always boot straight into normal gameplay, never the debug map-select.
+    bool isSpeedrunFile = (this->buttonIndex < 3) && Save_GetSaveMetaInfo(this->buttonIndex)->isSpeedrun;
+
+    if (!isSpeedrunFile &&
+        ((this->buttonIndex == FS_BTN_SELECT_FILE_1 && CVarGetInteger(CVAR_DEVELOPER_TOOLS("DebugEnabled"), 0)) ||
+         this->buttonIndex == 0xFF)) {
         if (this->buttonIndex == 0xFF) {
             Sram_InitDebugSave();
         } else {

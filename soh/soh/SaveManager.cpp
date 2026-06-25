@@ -148,6 +148,7 @@ SaveManager::SaveManager() {
         info.randoSave = 0;
         info.requiresMasterQuest = 0;
         info.requiresOriginal = 0;
+        info.isSpeedrun = 0;
 
         info.buildVersionMajor = 0;
         info.buildVersionMinor = 0;
@@ -560,6 +561,7 @@ void SaveManager::StartupCheckAndInitMeta(int fileNum) {
 
     fileMetaInfo[fileNum].requiresOriginal = !baseBlock["isMasterQuest"];
     fileMetaInfo[fileNum].requiresMasterQuest = baseBlock["isMasterQuest"];
+    fileMetaInfo[fileNum].isSpeedrun = baseBlock.value("isSpeedrun", false);
 
     fileMetaInfo[fileNum].randoSave = isRando;
     if (isRando) {
@@ -642,6 +644,7 @@ void SaveManager::InitMeta(int fileNum) {
     // in which case we don't actually require a vanilla OTR.
     fileMetaInfo[fileNum].requiresOriginal =
         !IS_MASTER_QUEST && (!IS_RANDO || randoContext->GetDungeons()->CountMQ() < 12);
+    fileMetaInfo[fileNum].isSpeedrun = IS_SPEEDRUN;
 
     fileMetaInfo[fileNum].buildVersionMajor = gSaveContext.ship.stats.buildVersionMajor;
     fileMetaInfo[fileNum].buildVersionMinor = gSaveContext.ship.stats.buildVersionMinor;
@@ -1285,6 +1288,10 @@ void SaveManager::LoadFile(int fileNum) {
         }
         if (saveBlock.contains("fileType") && saveBlock["fileType"] == FILE_TYPE_SAVE_RANDO) {
             gSaveContext.ship.quest.id = QUEST_RANDOMIZER;
+        } else {
+            // Default to vanilla; the base-section loader promotes to MASTER/SPEEDRUN per the saved
+            // flags. Prevents a stale quest id (e.g. from a speedrun run) leaking into a normal file.
+            gSaveContext.ship.quest.id = OTRGlobals::Instance->HasOriginal() ? QUEST_NORMAL : QUEST_MASTER;
         }
         switch (saveBlock["version"].get<int>()) {
             case 1:
@@ -1977,6 +1984,11 @@ void SaveManager::LoadBaseVersion3() {
     if (isMQ) {
         gSaveContext.ship.quest.id = QUEST_MASTER;
     }
+    int isSpeedrun = 0;
+    SaveManager::Instance->LoadData("isSpeedrun", isSpeedrun);
+    if (isSpeedrun) {
+        gSaveContext.ship.quest.id = QUEST_SPEEDRUN;
+    }
     SaveManager::Instance->LoadStruct("backupFW", []() {
         SaveManager::Instance->LoadStruct("pos", []() {
             SaveManager::Instance->LoadData("x", gSaveContext.ship.backupFW.pos.x);
@@ -2152,6 +2164,11 @@ void SaveManager::LoadBaseVersion4() {
     if (isMQ) {
         gSaveContext.ship.quest.id = QUEST_MASTER;
     }
+    int isSpeedrun = 0;
+    SaveManager::Instance->LoadData("isSpeedrun", isSpeedrun);
+    if (isSpeedrun) {
+        gSaveContext.ship.quest.id = QUEST_SPEEDRUN;
+    }
     SaveManager::Instance->LoadStruct("backupFW", []() {
         SaveManager::Instance->LoadStruct("pos", []() {
             SaveManager::Instance->LoadData("x", gSaveContext.ship.backupFW.pos.x);
@@ -2320,6 +2337,7 @@ void SaveManager::SaveBase(SaveContext* saveContext, int sectionID, bool fullSav
         SaveManager::Instance->SaveData("", saveContext->ship.randomizerInf[i]);
     });
     SaveManager::Instance->SaveData("isMasterQuest", saveContext->ship.quest.id == QUEST_MASTER);
+    SaveManager::Instance->SaveData("isSpeedrun", saveContext->ship.quest.id == QUEST_SPEEDRUN);
     SaveManager::Instance->SaveStruct("backupFW", [&]() {
         SaveManager::Instance->SaveStruct("pos", [&]() {
             SaveManager::Instance->SaveData("x", saveContext->ship.backupFW.pos.x);
@@ -2435,6 +2453,7 @@ void SaveManager::DeleteZeldaFile(int fileNum) {
     fileMetaInfo[fileNum].randoSave = false;
     fileMetaInfo[fileNum].requiresMasterQuest = false;
     fileMetaInfo[fileNum].requiresOriginal = false;
+    fileMetaInfo[fileNum].isSpeedrun = false;
     GameInteractor::Instance->ExecuteHooks<GameInteractor::OnDeleteFile>(fileNum);
 }
 

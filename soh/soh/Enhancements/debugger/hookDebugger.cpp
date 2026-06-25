@@ -1,4 +1,5 @@
 #include "hookDebugger.h"
+#include "soh/Enhancements/speedrun/Speedrun.h"
 #include "soh/SohGui/SohGui.hpp"
 #include "soh/Enhancements/game-interactor/GameInteractor.h"
 #include "soh/SohGui/UIWidgets.hpp"
@@ -84,7 +85,7 @@ void HookDebuggerWindow::DrawElement() {
     bool collapseLogic = false;
     bool doingCollapseOrExpand = hookOptExpandAll || hookOptCollapseAll;
 
-    ImGui::BeginDisabled(CVarGetInteger(CVAR_SETTING("DisableChanges"), 0));
+    ImGui::BeginDisabled((CVarGetInteger(CVAR_SETTING("DisableChanges"), 0) || Speedrun_IsLockActive()));
 #ifndef __cpp_lib_source_location
     ImGui::TextColored(yellow, "Some features of the Hook Debugger are unavailable because SoH was compiled "
                                "without \"<source_location>\" support "

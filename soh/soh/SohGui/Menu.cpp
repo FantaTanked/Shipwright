@@ -1,6 +1,7 @@
 #include "Menu.h"
 #include "UIWidgets.hpp"
 #include "soh/OTRGlobals.h"
+#include "soh/Enhancements/speedrun/Speedrun.h"
 #include <ship/window/gui/GuiMenuBar.h>
 #include <ship/window/gui/GuiElement.h>
 #include "SohModals.h"
@@ -70,6 +71,9 @@ uint32_t GetVectorIndexOf(std::vector<std::string>& vector, std::string value) {
 }
 
 static bool raceDisableActive = false;
+// Cached once per frame in DrawElement so per-widget rendering can label the lockout reason without
+// re-evaluating the speedrun lock for every widget.
+static bool speedrunLockActive = false;
 
 void Menu::InsertSidebarSearch() {
     menuEntries["Settings"].sidebars.emplace("Search", searchSidebarEntry);
@@ -291,8 +295,11 @@ void Menu::MenuDrawItem(WidgetInfo& widget, uint32_t width, UIWidgets::Colors me
     disabledValue = false;
     disabledTooltip = " ";
 
+    // Recompute disabled state each frame: clear it before the preFunc/race latches below set it, so
+    // a widget with no preFunc doesn't stay disabled after its condition clears.
+    widget.ResetDisables();
+
     if (widget.preFunc != nullptr) {
-        widget.ResetDisables();
         widget.preFunc(widget);
         if (widget.isHidden) {
             return;
@@ -307,7 +314,8 @@ void Menu::MenuDrawItem(WidgetInfo& widget, uint32_t width, UIWidgets::Colors me
     }
     if (widget.raceDisable && raceDisableActive) {
         widget.options->disabled = true;
-        disabledTempTooltip += std::string("\n- Race Lockout Active");
+        disabledTempTooltip += speedrunLockActive ? std::string("\n- Locked in Speedrun mode")
+                                                   : std::string("\n- Race Lockout Active");
         widget.options->disabledTooltip = disabledTempTooltip.c_str();
     }
 
@@ -595,7 +603,8 @@ void Menu::DrawElement() {
         navigateToWidget = false;
     }
 
-    raceDisableActive = CVarGetInteger(CVAR_SETTING("DisableChanges"), 0);
+    speedrunLockActive = Speedrun_IsLockActive();
+    raceDisableActive = CVarGetInteger(CVAR_SETTING("DisableChanges"), 0) || speedrunLockActive;
 
     windowHeight = ImGui::GetMainViewport()->WorkSize.y;
     windowWidth = ImGui::GetMainViewport()->WorkSize.x;

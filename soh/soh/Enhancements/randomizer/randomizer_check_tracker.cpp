@@ -1,4 +1,5 @@
 #include "randomizer_check_tracker.h"
+#include "soh/Enhancements/speedrun/Speedrun.h"
 #include "randomizer_entrance_tracker.h"
 #include "randomizer_item_tracker.h"
 #include "randomizerTypes.h"
@@ -2341,7 +2342,7 @@ void CheckTrackerSettingsWindow::DrawElement() {
                                             .DefaultIndex(TRACKER_COMBO_BUTTON_L));
             }
         }
-        ImGui::BeginDisabled(CVarGetInteger(CVAR_SETTING("DisableChanges"), 0));
+        ImGui::BeginDisabled((CVarGetInteger(CVAR_SETTING("DisableChanges"), 0) || Speedrun_IsLockActive()));
         SohGui::GetSohMenu()->MenuDrawItem(dungeonSpoilerWidget,
                                            static_cast<uint32_t>(ImGui::GetContentRegionAvail().x), THEME_COLOR);
         ImGui::EndDisabled();
@@ -2355,7 +2356,7 @@ void CheckTrackerSettingsWindow::DrawElement() {
         SohGui::GetSohMenu()->MenuDrawItem(showLogicWidget, static_cast<uint32_t>(ImGui::GetContentRegionAvail().x),
                                            THEME_COLOR);
 
-        ImGui::BeginDisabled(CVarGetInteger(CVAR_SETTING("DisableChanges"), 0));
+        ImGui::BeginDisabled((CVarGetInteger(CVAR_SETTING("DisableChanges"), 0) || Speedrun_IsLockActive()));
         SohGui::GetSohMenu()->MenuDrawItem(checkAvailabilityWidget,
                                            static_cast<uint32_t>(ImGui::GetContentRegionAvail().x), THEME_COLOR);
         ImGui::EndDisabled();

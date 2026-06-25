@@ -1,4 +1,5 @@
 #include "Presets.h"
+#include "soh/Enhancements/speedrun/Speedrun.h"
 #include <string>
 #include <fstream>
 #include <ship/config/Config.h>
@@ -104,6 +105,78 @@ std::string FormatPresetPath(std::string name) {
     return fmt::format("{}/{}.json", presetFolder, SanitizeFilename(name));
 }
 
+// Applies a single section (by PresetSection index) of a preset's JSON to the live config.
+static void ApplyPresetSection(const nlohmann::json& presetValues, int i) {
+    if (i == PRESET_SECTION_TRACKERS) {
+        ItemTracker_LoadFromPreset(presetValues["blocks"][blockInfo[i].names[1]]["windows"]);
+        if (presetValues["blocks"][blockInfo[i].names[1]]["windows"].contains("Check Tracker")) {
+            CheckTracker::LoadFromPreset(presetValues["blocks"][blockInfo[i].names[1]]["windows"]["Check Tracker"]);
+        }
+        if (presetValues["blocks"][blockInfo[i].names[1]]["windows"].contains("Entrance Tracker")) {
+            EntranceTracker::LoadFromPreset(
+                presetValues["blocks"][blockInfo[i].names[1]]["windows"]["Entrance Tracker"]);
+        }
+    }
+    auto section = presetValues["blocks"][blockInfo[i].names[1]];
+    std::string sectionStrategy = "overwrite";
+    if (presetValues.contains("blockStrategy") && presetValues["blockStrategy"].contains(blockInfo[i].names[1])) {
+        sectionStrategy = presetValues["blockStrategy"][blockInfo[i].names[1]];
+    }
+
+    for (auto& item : section.items()) {
+        if (section[item.key()].is_null()) {
+            CVarClearBlock(item.key().c_str());
+        } else {
+            auto block = item.value();
+            if (sectionStrategy == "merge") {
+                auto currentJson = Ship::Context::GetRawInstance()->GetConfig()->GetNestedJson();
+                if (currentJson.contains("CVars") && currentJson["CVars"].contains(item.key())) {
+                    block = currentJson["CVars"][item.key()];
+                    // Recursively merge the two json objects
+                    block.update(item.value(), true);
+                }
+            }
+
+            Ship::Context::GetRawInstance()->GetConfig()->SetBlock(fmt::format("{}.{}", "CVars", item.key()), block);
+            Ship::Context::GetRawInstance()->GetConsoleVariables()->Load();
+        }
+    }
+    if (i == PRESET_SECTION_RANDOMIZER) {
+        Rando::Settings::GetInstance()->UpdateAllOptions();
+        SohGui::UpdateMenuTricks();
+        SohGui::UpdateMenuLocations();
+    }
+}
+
+// Applies a preset directly from its JSON (every section it contains, optionally filtered to includeSections),
+// independent of the UI per-section "apply" toggles. Used to apply presets programmatically (e.g. Speedrun mode).
+void ApplyPresetJson(const nlohmann::json& presetValues, std::vector<PresetSection> includeSections) {
+    if (!presetValues.contains("blocks")) {
+        return;
+    }
+    for (int i = PRESET_SECTION_SETTINGS; i < PRESET_SECTION_MAX; i++) {
+        if (!presetValues["blocks"].contains(blockInfo[i].names[1])) {
+            continue;
+        }
+        if (!includeSections.empty() &&
+            std::find(includeSections.begin(), includeSections.end(), i) == includeSections.end()) {
+            continue;
+        }
+        ApplyPresetSection(presetValues, i);
+    }
+    ShipInit::InitAll();
+    OTRGlobals::Instance->ScaleImGui();
+}
+
+const nlohmann::json* FindPresetByFileName(const std::string& fileName) {
+    for (auto& [name, info] : presets) {
+        if (info.fileName == fileName) {
+            return &info.presetValues;
+        }
+    }
+    return nullptr;
+}
+
 void applyPreset(std::string presetName, std::vector<PresetSection> includeSections) {
     auto& info = presets[presetName];
     for (int i = PRESET_SECTION_SETTINGS; i < PRESET_SECTION_MAX; i++) {
@@ -112,48 +185,7 @@ void applyPreset(std::string presetName, std::vector<PresetSection> includeSecti
                 std::find(includeSections.begin(), includeSections.end(), i) == includeSections.end()) {
                 continue;
             }
-            if (i == PRESET_SECTION_TRACKERS) {
-                ItemTracker_LoadFromPreset(info.presetValues["blocks"][blockInfo[i].names[1]]["windows"]);
-                if (info.presetValues["blocks"][blockInfo[i].names[1]]["windows"].contains("Check Tracker")) {
-                    CheckTracker::LoadFromPreset(
-                        info.presetValues["blocks"][blockInfo[i].names[1]]["windows"]["Check Tracker"]);
-                }
-                if (info.presetValues["blocks"][blockInfo[i].names[1]]["windows"].contains("Entrance Tracker")) {
-                    EntranceTracker::LoadFromPreset(
-                        info.presetValues["blocks"][blockInfo[i].names[1]]["windows"]["Entrance Tracker"]);
-                }
-            }
-            auto section = info.presetValues["blocks"][blockInfo[i].names[1]];
-            std::string sectionStrategy = "overwrite";
-            if (info.presetValues.contains("blockStrategy") &&
-                info.presetValues["blockStrategy"].contains(blockInfo[i].names[1])) {
-                sectionStrategy = info.presetValues["blockStrategy"][blockInfo[i].names[1]];
-            }
-
-            for (auto& item : section.items()) {
-                if (section[item.key()].is_null()) {
-                    CVarClearBlock(item.key().c_str());
-                } else {
-                    auto block = item.value();
-                    if (sectionStrategy == "merge") {
-                        auto currentJson = Ship::Context::GetRawInstance()->GetConfig()->GetNestedJson();
-                        if (currentJson.contains("CVars") && currentJson["CVars"].contains(item.key())) {
-                            block = currentJson["CVars"][item.key()];
-                            // Recursively merge the two json objects
-                            block.update(item.value(), true);
-                        }
-                    }
-
-                    Ship::Context::GetRawInstance()->GetConfig()->SetBlock(fmt::format("{}.{}", "CVars", item.key()),
-                                                                           block);
-                    Ship::Context::GetRawInstance()->GetConsoleVariables()->Load();
-                }
-            }
-            if (i == PRESET_SECTION_RANDOMIZER) {
-                Rando::Settings::GetInstance()->UpdateAllOptions();
-                SohGui::UpdateMenuTricks();
-                SohGui::UpdateMenuLocations();
-            }
+            ApplyPresetSection(info.presetValues, i);
         }
     }
     ShipInit::InitAll();
@@ -402,7 +434,7 @@ void DrawNewPresetPopup() {
 void PresetsCustomWidget(WidgetInfo& info) {
     ImGui::PushFont(OTRGlobals::Instance->fontMonoLarger);
     if (UIWidgets::Button("New Preset", UIWidgets::ButtonOptions(
-                                            { { .disabled = (CVarGetInteger(CVAR_SETTING("DisableChanges"), 0) != 0),
+                                            { { .disabled = ((CVarGetInteger(CVAR_SETTING("DisableChanges"), 0) || Speedrun_IsLockActive()) != 0),
                                                 .disabledTooltip = "Disabled because of race lockout" } })
                                             .Size(UIWidgets::Sizes::Inline)
                                             .Color(THEME_COLOR))) {
@@ -464,7 +496,7 @@ void PresetsCustomWidget(WidgetInfo& info) {
             UIWidgets::PushStyleButton(THEME_COLOR);
             if (UIWidgets::Button(
                     ("Apply##" + name).c_str(),
-                    UIWidgets::ButtonOptions({ { .disabled = (CVarGetInteger(CVAR_SETTING("DisableChanges"), 0) != 0),
+                    UIWidgets::ButtonOptions({ { .disabled = ((CVarGetInteger(CVAR_SETTING("DisableChanges"), 0) || Speedrun_IsLockActive()) != 0),
                                                  .disabledTooltip = "Disabled because of race lockout" } })
                         .Padding({ 6.0f, 6.0f }))) {
                 applyPreset(name);

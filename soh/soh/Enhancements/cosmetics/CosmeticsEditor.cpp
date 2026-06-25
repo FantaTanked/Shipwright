@@ -1,4 +1,5 @@
 #include "CosmeticsEditor.h"
+#include "soh/Enhancements/speedrun/Speedrun.h"
 #include "cosmeticsTypes.h"
 #include "authenticGfxPatches.h"
 #include "soh/Enhancements/game-interactor/GameInteractor.h"
@@ -1886,7 +1887,7 @@ void Reset_Option_Double(const char* Button_Title, const char* name) {
 }
 
 void DrawSillyTab() {
-    ImGui::BeginDisabled(CVarGetInteger(CVAR_SETTING("DisableChanges"), 0));
+    ImGui::BeginDisabled((CVarGetInteger(CVAR_SETTING("DisableChanges"), 0) || Speedrun_IsLockActive()));
 
     UIWidgets::Separator(true, true, 2.0f, 2.0f);
 
@@ -2444,7 +2445,7 @@ void CosmeticsEditorWindow::DrawElement() {
             }
         }
     }
-    ImGui::BeginDisabled(CVarGetInteger(CVAR_SETTING("DisableChanges"), 0));
+    ImGui::BeginDisabled((CVarGetInteger(CVAR_SETTING("DisableChanges"), 0) || Speedrun_IsLockActive()));
     if (UIWidgets::Button("Randomize All", UIWidgets::ButtonOptions().Size(ImVec2(250.0f, 0.0f)).Color(THEME_COLOR))) {
         CosmeticsEditor_RandomizeAll();
     }
@@ -2470,7 +2471,7 @@ void CosmeticsEditorWindow::DrawElement() {
         }
     }
 
-    ImGui::BeginDisabled(CVarGetInteger(CVAR_SETTING("DisableChanges"), 0));
+    ImGui::BeginDisabled((CVarGetInteger(CVAR_SETTING("DisableChanges"), 0) || Speedrun_IsLockActive()));
     if (UIWidgets::Button("Rainbow All", UIWidgets::ButtonOptions().Size(ImVec2(250.0f, 0.0f)).Color(THEME_COLOR))) {
         for (auto& [id, cosmeticOption] : cosmeticOptions) {
             if (!CVarGetInteger(cosmeticOption.lockedCvar, 0) &&
@@ -2511,7 +2512,7 @@ void CosmeticsEditorWindow::DrawElement() {
 
         if (ImGui::BeginTabItem("Keys")) {
 
-            ImGui::BeginDisabled(CVarGetInteger(CVAR_SETTING("DisableChanges"), 0));
+            ImGui::BeginDisabled((CVarGetInteger(CVAR_SETTING("DisableChanges"), 0) || Speedrun_IsLockActive()));
             UIWidgets::Separator(true, true, 2.0f, 2.0f);
 
             if (UIWidgets::Button("Give all keys dungeon-specific colors",

@@ -1,4 +1,5 @@
 #include "actorViewer.h"
+#include "soh/Enhancements/speedrun/Speedrun.h"
 #include "../../util.h"
 #include "soh/SohGui/UIWidgets.hpp"
 #include "soh/SohGui/SohGui.hpp"
@@ -866,7 +867,7 @@ void ActorViewer_AddTagForAllActors() {
 }
 
 void ActorViewerWindow::DrawElement() {
-    ImGui::BeginDisabled(CVarGetInteger(CVAR_SETTING("DisableChanges"), 0));
+    ImGui::BeginDisabled((CVarGetInteger(CVAR_SETTING("DisableChanges"), 0) || Speedrun_IsLockActive()));
     static ActorInfo newActor = { 0, 0, { 0, 0, 0 }, { 0, 0, 0 } };
     static ImU16 one = 1;
     static std::string filler = "Please select";

@@ -1,4 +1,5 @@
 #include "colViewer.h"
+#include "soh/Enhancements/speedrun/Speedrun.h"
 #include "soh/SohGui/UIWidgets.hpp"
 #include "soh/SohGui/SohGui.hpp"
 
@@ -56,7 +57,7 @@ using namespace UIWidgets;
 
 // Draws the ImGui window for the collision viewer
 void ColViewerWindow::DrawElement() {
-    ImGui::BeginDisabled(CVarGetInteger(CVAR_SETTING("DisableChanges"), 0));
+    ImGui::BeginDisabled((CVarGetInteger(CVAR_SETTING("DisableChanges"), 0) || Speedrun_IsLockActive()));
     CheckboxOptions checkOpt = CheckboxOptions().Color(THEME_COLOR);
     ComboboxOptions comboOpt = ComboboxOptions().Color(THEME_COLOR);
     CVarCheckbox("Enabled", CVAR_DEVELOPER_TOOLS("ColViewer.Enabled"), checkOpt);

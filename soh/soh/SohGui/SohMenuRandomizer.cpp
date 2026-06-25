@@ -1,4 +1,5 @@
 #include "SohMenu.h"
+#include "soh/Enhancements/speedrun/Speedrun.h"
 #include "soh/Enhancements/enhancementTypes.h"
 #include "soh/Enhancements/randomizer/randomizer.h"
 #include "soh/Enhancements/randomizer/randomizerTypes.h"
@@ -53,7 +54,7 @@ void DrawLocationsMenu(WidgetInfo& info) {
     static ImVec2 cellPadding(8.0f, 8.0f);
     bool generating = CVarGetInteger(CVAR_GENERAL("RandoGenerating"), 0);
     bool disableEditingRandoSettings = generating || CVarGetInteger(CVAR_GENERAL("OnFileSelectNameEntry"), 0);
-    ImGui::BeginDisabled(CVarGetInteger(CVAR_SETTING("DisableChanges"), 0) || disableEditingRandoSettings);
+    ImGui::BeginDisabled((CVarGetInteger(CVAR_SETTING("DisableChanges"), 0) || Speedrun_IsLockActive()) || disableEditingRandoSettings);
     ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, cellPadding);
     if (locationsDirty || currMQDungeonSetting != prevMQDungeonSetting || GameInteractor::IsSaveLoaded()) {
         locationsDirty = false;
@@ -234,7 +235,7 @@ void DrawTricksMenu(WidgetInfo& info) {
     }
 
     ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, cellPadding);
-    ImGui::BeginDisabled(CVarGetInteger(CVAR_SETTING("DisableChanges"), 0) || disableEditingRandoSettings);
+    ImGui::BeginDisabled((CVarGetInteger(CVAR_SETTING("DisableChanges"), 0) || Speedrun_IsLockActive()) || disableEditingRandoSettings);
 
     // Tricks
     static std::map<RandomizerArea, bool> areaTreeDisabled{

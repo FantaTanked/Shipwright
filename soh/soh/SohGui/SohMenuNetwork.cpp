@@ -1,4 +1,5 @@
 #include "SohMenu.h"
+#include "soh/Enhancements/speedrun/Speedrun.h"
 #include <soh/Notification/Notification.h>
 #include <soh/Network/Network.h>
 #include "SohGui.hpp"
@@ -41,7 +42,7 @@ void SohMenu::AddMenuNetwork() {
         })
         .Options(ButtonOptions().Tooltip("https://github.com/HarbourMasters/sail"));
     AddWidget(path, "Host & Port", WIDGET_CUSTOM).CustomFunction([](WidgetInfo& info) {
-        ImGui::BeginDisabled(Sail::Instance->isEnabled || CVarGetInteger(CVAR_SETTING("DisableChanges"), 0));
+        ImGui::BeginDisabled(Sail::Instance->isEnabled || (CVarGetInteger(CVAR_SETTING("DisableChanges"), 0) || Speedrun_IsLockActive()));
         ImGui::Text("%s", info.name.c_str());
         CVarInputString("##HostSail", CVAR_REMOTE_SAIL("Host"),
                         InputOptions()
@@ -107,7 +108,7 @@ void SohMenu::AddMenuNetwork() {
 
     AddWidget(path, "Connect to Crowd Control", WIDGET_SEPARATOR_TEXT);
     AddWidget(path, "Host & Port", WIDGET_CUSTOM).CustomFunction([](WidgetInfo& info) {
-        ImGui::BeginDisabled(CrowdControl::Instance->isEnabled || CVarGetInteger(CVAR_SETTING("DisableChanges"), 0));
+        ImGui::BeginDisabled(CrowdControl::Instance->isEnabled || (CVarGetInteger(CVAR_SETTING("DisableChanges"), 0) || Speedrun_IsLockActive()));
         ImGui::Text("%s", info.name.c_str());
         CVarInputString("##HostCrowdControl", CVAR_REMOTE_CROWD_CONTROL("Host"),
                         InputOptions()

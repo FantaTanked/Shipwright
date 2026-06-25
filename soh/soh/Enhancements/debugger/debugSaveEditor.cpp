@@ -1,4 +1,5 @@
 #include "debugSaveEditor.h"
+#include "soh/Enhancements/speedrun/Speedrun.h"
 #include "soh/Enhancements/randomizer/randomizerTypes.h"
 #include "soh/Enhancements/randomizer/randomizer.h"
 #include "soh/util.h"
@@ -1943,7 +1944,7 @@ void ResetBaseOptions() {
 void SaveEditorWindow::DrawElement() {
     PushStyleTabs(THEME_COLOR);
     ImGui::PushFont(OTRGlobals::Instance->fontMonoLarger);
-    ImGui::BeginDisabled(CVarGetInteger(CVAR_SETTING("DisableChanges"), 0));
+    ImGui::BeginDisabled((CVarGetInteger(CVAR_SETTING("DisableChanges"), 0) || Speedrun_IsLockActive()));
 
     if (ImGui::BeginTabBar("SaveContextTabBar", ImGuiTabBarFlags_NoCloseWithMiddleMouseButton)) {
         ResetBaseOptions();

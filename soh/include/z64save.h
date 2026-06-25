@@ -358,12 +358,15 @@ typedef enum {
     /* 01 */ QUEST_MASTER,
     /* 02 */ QUEST_RANDOMIZER,
     /* 03 */ QUEST_BOSSRUSH,
+    /* 04 */ QUEST_SPEEDRUN,
 } Quest;
 
-#define IS_VANILLA (gSaveContext.ship.quest.id == QUEST_NORMAL)
+// Speedrun is vanilla gameplay with a locked settings preset, so it counts as vanilla content.
+#define IS_VANILLA (gSaveContext.ship.quest.id == QUEST_NORMAL || gSaveContext.ship.quest.id == QUEST_SPEEDRUN)
 #define IS_MASTER_QUEST (gSaveContext.ship.quest.id == QUEST_MASTER)
 #define IS_RANDO (gSaveContext.ship.quest.id == QUEST_RANDOMIZER)
 #define IS_BOSS_RUSH (gSaveContext.ship.quest.id == QUEST_BOSSRUSH)
+#define IS_SPEEDRUN (gSaveContext.ship.quest.id == QUEST_SPEEDRUN)
 
 typedef enum {
     /* 0x00 */ BTN_ENABLED,

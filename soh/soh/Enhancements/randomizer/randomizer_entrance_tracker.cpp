@@ -1,4 +1,5 @@
 #include "randomizer_entrance_tracker.h"
+#include "soh/Enhancements/speedrun/Speedrun.h"
 #include "soh/OTRGlobals.h"
 #include "soh/cvar_prefixes.h"
 #include "soh/SohGui/SohGui.hpp"
@@ -751,7 +752,7 @@ void EntranceTrackerSettingsWindow::DrawElement() {
                      CheckboxOptions()
                          .Tooltip("Automatically scroll to the first available entrance in the current scene")
                          .Color(THEME_COLOR));
-        ImGui::BeginDisabled(CVarGetInteger(CVAR_SETTING("DisableChanges"), 0));
+        ImGui::BeginDisabled((CVarGetInteger(CVAR_SETTING("DisableChanges"), 0) || Speedrun_IsLockActive()));
         CVarCheckbox(
             "Highlight previous", CVAR_TRACKER_ENTRANCE("HighlightPrevious"),
             CheckboxOptions().Tooltip("Highlight the previous entrance that Link came from").Color(THEME_COLOR));
@@ -783,7 +784,7 @@ void EntranceTrackerSettingsWindow::DrawElement() {
                         RadioButtonsOptions().Color(THEME_COLOR).Tooltip("Group entrances by their entrance type"));
 
         ImGui::Text("Spoiler Reveal");
-        ImGui::BeginDisabled(CVarGetInteger(CVAR_SETTING("DisableChanges"), 0));
+        ImGui::BeginDisabled((CVarGetInteger(CVAR_SETTING("DisableChanges"), 0) || Speedrun_IsLockActive()));
         CVarCheckbox("Show Source", CVAR_TRACKER_ENTRANCE("ShowFrom"),
                      CheckboxOptions().Tooltip("Reveal the source for undiscovered entrances").Color(THEME_COLOR));
         CVarCheckbox("Show Destination", CVAR_TRACKER_ENTRANCE("ShowTo"),

@@ -1,5 +1,6 @@
 #include "MessageViewer.h"
 
+#include "soh/Enhancements/speedrun/Speedrun.h"
 #include "soh/SohGui/UIWidgets.hpp"
 #include "soh/SohGui/SohGui.hpp"
 #include "soh/SohGui/SohMenu.h"
@@ -33,7 +34,7 @@ MessageViewer::~MessageViewer() {
 }
 
 void MessageViewer::DrawElement() {
-    ImGui::BeginDisabled(CVarGetInteger(CVAR_SETTING("DisableChanges"), 0));
+    ImGui::BeginDisabled((CVarGetInteger(CVAR_SETTING("DisableChanges"), 0) || Speedrun_IsLockActive()));
     ImGui::Text("Table ID");
     ImGui::SameLine();
     PushStyleInput(THEME_COLOR);

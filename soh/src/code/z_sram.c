@@ -232,7 +232,12 @@ void Sram_InitSave(FileChooseContext* fileChooseCtx) {
     u16* ptr;
     u16 checksum;
 
-    if (fileChooseCtx->buttonIndex != 0 || !CVarGetInteger(CVAR_DEVELOPER_TOOLS("DebugEnabled"), 0)) {
+    u8 currentQuest = fileChooseCtx->questType[fileChooseCtx->buttonIndex];
+    // Speedrun files always start from a clean save, never the debug save (which grants all items).
+    u8 useDebugSave = (fileChooseCtx->buttonIndex == 0) && CVarGetInteger(CVAR_DEVELOPER_TOOLS("DebugEnabled"), 0) &&
+                      (currentQuest != QUEST_SPEEDRUN);
+
+    if (!useDebugSave) {
         Sram_InitNewSave();
     } else {
         Sram_InitDebugSave();
@@ -249,7 +254,7 @@ void Sram_InitSave(FileChooseContext* fileChooseCtx) {
             (gSaveContext.language == LANGUAGE_JPN) ? NAME_LANGUAGE_NTSC_JPN : NAME_LANGUAGE_NTSC_ENG;
     }
 
-    if ((fileChooseCtx->buttonIndex == 0 && CVarGetInteger(CVAR_DEVELOPER_TOOLS("DebugEnabled"), 0))) {
+    if (useDebugSave) {
         gSaveContext.cutsceneIndex = 0;
     }
 
@@ -258,8 +263,6 @@ void Sram_InitSave(FileChooseContext* fileChooseCtx) {
     }
 
     gSaveContext.n64ddFlag = fileChooseCtx->n64ddFlag;
-
-    u8 currentQuest = fileChooseCtx->questType[fileChooseCtx->buttonIndex];
 
     if (currentQuest == QUEST_RANDOMIZER && (Randomizer_IsSeedGenerated() || Randomizer_IsSpoilerLoaded())) {
         gSaveContext.ship.quest.id = QUEST_RANDOMIZER;

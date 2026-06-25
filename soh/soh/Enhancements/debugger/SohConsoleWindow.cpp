@@ -1,10 +1,11 @@
 #include "SohConsoleWindow.h"
+#include "soh/Enhancements/speedrun/Speedrun.h"
 #include "soh/OTRGlobals.h"
 #include "soh/SohGui/UIWidgets.hpp"
 #include "soh/SohGui/SohGui.hpp"
 
 void SohConsoleWindow::DrawElement() {
-    ImGui::BeginDisabled(CVarGetInteger(CVAR_SETTING("DisableChanges"), 0));
+    ImGui::BeginDisabled((CVarGetInteger(CVAR_SETTING("DisableChanges"), 0) || Speedrun_IsLockActive()));
     UIWidgets::PushStyleInput(THEME_COLOR);
     // Small font (13) to match hardcoded width values in the LUS window.. set large font after below TODO addressed
     ImGui::PushFont(OTRGlobals::Instance->fontMonoSmall);

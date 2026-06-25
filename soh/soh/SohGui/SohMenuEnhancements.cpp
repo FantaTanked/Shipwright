@@ -136,6 +136,15 @@ static const std::map<int32_t, const char*> mirroredWorldModes = {
     { MIRRORED_WORLD_DUNGEONS_RANDOM_SEEDED, "Dungeons Random (Seeded)" },
 };
 
+static const std::map<int32_t, const char*> assChestItemValues = {
+    { 0, "Off (vanilla junk)" },
+    { 1, "Spooky Mask" },
+    { 2, "Fire Arrows" },
+    { 3, "Hookshot" },
+    { 4, "Biggoron's Sword" },
+    { 5, "Gold Scale" },
+};
+
 void SohMenu::AddMenuEnhancements() {
     // Add Enhancements Menu
     AddMenuEntry("Enhancements", CVAR_SETTING("Menu.EnhancementsSidebarSection"));
@@ -1511,6 +1520,16 @@ void SohMenu::AddMenuEnhancements() {
                      .DefaultValue(20)
                      .Format("%d arrows")
                      .Tooltip("The number of arrows available at the start of the Horseback Archery minigame."));
+    AddWidget(path, "Ass Chest Reward", WIDGET_CVAR_COMBOBOX)
+        .CVar(CVAR_ENHANCEMENT("AssChestItem"))
+        .Options(
+            ComboboxOptions()
+                .ComboMap(assChestItemValues)
+                .DefaultIndex(0)
+                .Tooltip("Choose the item awarded by the \"Ass Chest\" glitch - the junk prize the Horseback "
+                         "Archery game gives when you win it while already holding the maximum quiver (or none). "
+                         "On console the item depends on game version/memory; here you pick it. \"Off\" keeps the "
+                         "original (undefined) behavior."));
 
     AddWidget(path, "Frogs' Ocarina Game", WIDGET_SEPARATOR_TEXT);
     AddWidget(path, "Customize Behavior##Frogs", WIDGET_CVAR_CHECKBOX)

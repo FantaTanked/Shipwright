@@ -496,6 +496,25 @@ void EnGe1_GetReaction_GateGuard(EnGe1* this, PlayState* play) {
 
 // Archery functions
 
+// Asschest: optional chosen payout when the archery quiver prize falls through to
+// junk (no/maxed quiver). CVar 0 = vanilla junk; 1..N selects from this table.
+static const s32 sAssChestItems[] = {
+    GI_MASK_SPOOKY,  // Spooky Mask (NTSC 1.0/1.2/VC)
+    GI_ARROW_FIRE,   // Fire Arrows (NTSC 1.1/GC/MQ-J)
+    GI_HOOKSHOT,     // Hookshot
+    GI_SWORD_BGS,    // Biggoron's Sword
+    GI_SCALE_GOLDEN, // Gold Scale
+};
+
+static bool EnGe1_TryGetAsschestItem(s32* getItemId) {
+    s32 sel = CVarGetInteger(CVAR_ENHANCEMENT("AssChestItem"), 0);
+    if (sel >= 1 && sel <= (s32)ARRAY_COUNT(sAssChestItems)) {
+        *getItemId = sAssChestItems[sel - 1];
+        return true;
+    }
+    return false;
+}
+
 void EnGe1_SetupWait_Archery(EnGe1* this, PlayState* play) {
     if (Actor_TextboxIsClosing(&this->actor, play)) {
         this->actionFunc = EnGe1_Wait_Archery;
@@ -528,6 +547,10 @@ void EnGe1_WaitTillItemGiven_Archery(EnGe1* this, PlayState* play) {
                 case 2:
                     getItemId = GI_QUIVER_50;
                     break;
+                default:
+                    // Asschest: vanilla reads junk here; optionally award a chosen item.
+                    EnGe1_TryGetAsschestItem(&getItemId);
+                    break;
             }
         } else {
             getItemId = GI_HEART_PIECE;
@@ -556,6 +579,10 @@ void EnGe1_BeginGiveItem_Archery(EnGe1* this, PlayState* play) {
                 break;
             case 2:
                 getItemId = GI_QUIVER_50;
+                break;
+            default:
+                // Asschest: vanilla reads junk here; optionally award a chosen item.
+                EnGe1_TryGetAsschestItem(&getItemId);
                 break;
         }
     } else {

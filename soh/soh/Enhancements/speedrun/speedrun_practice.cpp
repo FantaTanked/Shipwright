@@ -45,9 +45,16 @@ static const SpeedrunRootItem kRootItems[] = {
 };
 static const int kRootCount = (int)(sizeof(kRootItems) / sizeof(kRootItems[0]));
 
-// Macro-screen rows (our savestate section), in display order. "return" first, speedrun-style.
+// Macro-screen rows, in display order, modelled on gz's macro menu. "return" first, speedrun-style.
 enum SpeedrunMenuEntry {
     SPEEDRUN_MENU_BACK,
+    SPEEDRUN_MENU_RECORD,       // toggle recording (input only; no state save)
+    SPEEDRUN_MENU_PLAY,         // toggle playback from the current macro frame
+    SPEEDRUN_MENU_REWIND,       // seek macro to frame 0
+    SPEEDRUN_MENU_TRIM,         // truncate the macro at the current frame
+    SPEEDRUN_MENU_MACRO_FRAME,  // show/seek the current macro frame (D-left/right)
+    SPEEDRUN_MENU_QUICK_RECORD, // rewind + anchor (slots 0/1) + record
+    SPEEDRUN_MENU_QUICK_PLAY,   // load slot-0 anchor + play from frame 0
     SPEEDRUN_MENU_SAVE,
     SPEEDRUN_MENU_LOAD,
     SPEEDRUN_MENU_EXPORT,
@@ -102,6 +109,20 @@ static std::atomic<int> sWatchEditSel{ 0 };       // cursor on the edit screen
 static std::atomic<int> sWatchEditIdx{ 0 };       // active watch being edited
 static std::atomic<bool> sWatchPositioning{ false };
 
+// Macro/movie record + playback, modelled on gz: ONE in-memory clip of the per-frame Input the game consumed,
+// plus a per-slot "macro frame" stamp so a state saved mid-macro remembers its position and loading it seeks
+// the macro there (gz's re-record workflow). The clip is touched only on the game thread; the draw thread
+// reads the atomics below, never the vector.
+enum SpeedrunMovieState { MOVIE_IDLE, MOVIE_RECORDING, MOVIE_PLAYING };
+static std::atomic<int> sMovieState{ MOVIE_IDLE };
+static std::atomic<size_t> sMovieFrame{ 0 };  // playhead/record cursor (gz movie_frame)
+static std::atomic<size_t> sMovieLength{ 0 }; // sMovieInput.size() mirror for the draw thread
+static std::atomic<int> sMovieRerecords{ 0 }; // bumps when recording over an already-recorded frame
+static int sMovieLastRecordedFrame = -1;      // game-thread only
+static std::vector<Input> sMovieInput;        // game-thread only
+static const int kSpeedrunSlotCount = 6;      // savestate slots the UI cycles through (0..5)
+static int sSlotMovieFrame[kSpeedrunSlotCount] = { -1, -1, -1, -1, -1, -1 }; // -1 = not movie-linked
+
 // The overlay window. Kept hidden unless the menu is open so it never draws while closed
 // (an always-shown borderless window leaves a visual artifact when the OS window is moved/resized).
 static std::shared_ptr<Ship::GuiWindow> sOverlay;
@@ -146,6 +167,105 @@ static void SpeedrunSuppressDpad(Input* input) {
     input->cur.button &= ~dpad;
     input->press.button &= ~dpad;
     input->rel.button &= ~dpad;
+}
+
+// --- Macro/movie helpers (gz model); all run on the game thread ---
+
+static void SpeedrunMovieSeek(size_t frame) {
+    sMovieFrame.store(frame > sMovieInput.size() ? sMovieInput.size() : frame);
+}
+
+static void SpeedrunMovieRewind() {
+    sMovieFrame.store(0);
+}
+
+// Truncate the clip at the current frame (drops everything after the playhead).
+static void SpeedrunMovieTrim() {
+    const size_t f = sMovieFrame.load();
+    if (f < sMovieInput.size()) {
+        sMovieInput.resize(f);
+        sMovieLength.store(sMovieInput.size());
+    }
+}
+
+static void SpeedrunMovieToggleRecord() {
+    sMovieState.store(sMovieState.load() == MOVIE_RECORDING ? MOVIE_IDLE : MOVIE_RECORDING);
+}
+
+static void SpeedrunMovieTogglePlay() {
+    if (sMovieState.load() == MOVIE_PLAYING) {
+        sMovieState.store(MOVIE_IDLE);
+    } else if (!sMovieInput.empty()) {
+        if (sMovieFrame.load() >= sMovieInput.size()) {
+            sMovieFrame.store(0); // parked at the end: restart from 0
+        }
+        sMovieState.store(MOVIE_PLAYING);
+    }
+}
+
+// Save a state and stamp it with the current macro frame (or -1 when idle), so a later load can seek the
+// macro back to this point (gz's re-record workflow).
+static void SpeedrunDoSaveState(unsigned int slot) {
+    OTRGlobals::Instance->gSaveStateMgr->AddRequest({ slot, RequestType::SAVE });
+    if (slot < (unsigned int)kSpeedrunSlotCount) {
+        sSlotMovieFrame[slot] = (sMovieState.load() == MOVIE_IDLE) ? -1 : (int)sMovieFrame.load();
+    }
+}
+
+// Load a state and, if a macro is active and the state is movie-linked, seek the macro to the stamped frame.
+static void SpeedrunDoLoadState(unsigned int slot) {
+    OTRGlobals::Instance->gSaveStateMgr->AddRequest({ slot, RequestType::LOAD });
+    if (sMovieState.load() != MOVIE_IDLE && slot < (unsigned int)kSpeedrunSlotCount && sSlotMovieFrame[slot] >= 0) {
+        SpeedrunMovieSeek((size_t)sSlotMovieFrame[slot]);
+    }
+}
+
+// gz "quick record movie": rewind, start recording, and drop a frame-0 anchor in slot 0 (+ working slot 1).
+static void SpeedrunMovieQuickRecord() {
+    SpeedrunMovieRewind();
+    sMovieState.store(MOVIE_RECORDING);
+    SpeedrunDoSaveState(0);
+    SpeedrunDoSaveState(1);
+}
+
+// gz "quick play movie": if slot 0 holds the frame-0 anchor and a clip exists, load it and play from the start.
+static void SpeedrunMovieQuickPlay() {
+    if (sSlotMovieFrame[0] == 0 && !sMovieInput.empty()) {
+        SpeedrunMovieRewind();
+        sMovieState.store(MOVIE_PLAYING);
+        SpeedrunDoLoadState(0);
+    }
+}
+
+// Per-frame record/playback, run after the command layer on every advancing game frame (frozen frames during
+// frame-advance don't count, matching gz). Recording overwrites in-range and appends past the end; playback
+// feeds the recorded Input verbatim and stops at the end.
+static void SpeedrunMovieTick(Input* input, bool advancing) {
+    const int state = sMovieState.load();
+    if (state == MOVIE_IDLE || !advancing) {
+        return;
+    }
+    if (state == MOVIE_RECORDING) {
+        const size_t f = sMovieFrame.load();
+        if (f >= sMovieInput.size()) {
+            sMovieInput.resize(f + 1);
+            sMovieLength.store(sMovieInput.size());
+        }
+        if (sMovieLastRecordedFrame >= (int)f) {
+            sMovieRerecords.fetch_add(1);
+        }
+        sMovieLastRecordedFrame = (int)f;
+        sMovieInput[f] = *input;
+        sMovieFrame.store(f + 1);
+    } else { // MOVIE_PLAYING
+        const size_t f = sMovieFrame.load();
+        if (f >= sMovieInput.size()) {
+            sMovieState.store(MOVIE_IDLE); // end of clip: play once, then return control (gz loops only on hold)
+            return;
+        }
+        *input = sMovieInput[f];
+        sMovieFrame.store(f + 1);
+    }
 }
 
 // Populate the import list from `dir`: a ".." entry (unless at the savestates root), then subfolders,
@@ -224,11 +344,41 @@ static void SpeedrunConfirmMacroSelection() {
     const auto mgr = OTRGlobals::Instance->gSaveStateMgr;
     const unsigned int slot = SpeedrunCurrentSlot();
     switch (sMenuSel.load()) {
+        case SPEEDRUN_MENU_RECORD:
+            SpeedrunMovieToggleRecord();
+            if (sMovieState.load() == MOVIE_RECORDING) {
+                sMenuOpen.store(false); // just started: close so you can play the game
+            }
+            break;
+        case SPEEDRUN_MENU_PLAY:
+            SpeedrunMovieTogglePlay();
+            if (sMovieState.load() == MOVIE_PLAYING) {
+                sMenuOpen.store(false); // just started: close so the playback is visible
+            }
+            break;
+        case SPEEDRUN_MENU_REWIND:
+            SpeedrunMovieRewind();
+            break;
+        case SPEEDRUN_MENU_TRIM:
+            SpeedrunMovieTrim();
+            break;
+        case SPEEDRUN_MENU_MACRO_FRAME:
+            break; // seek with D-left/right (handled in the screen handler)
+        case SPEEDRUN_MENU_QUICK_RECORD:
+            SpeedrunMovieQuickRecord();
+            sMenuOpen.store(false);
+            break;
+        case SPEEDRUN_MENU_QUICK_PLAY:
+            SpeedrunMovieQuickPlay();
+            if (sMovieState.load() == MOVIE_PLAYING) {
+                sMenuOpen.store(false);
+            }
+            break;
         case SPEEDRUN_MENU_SAVE:
-            mgr->AddRequest({ slot, RequestType::SAVE });
+            SpeedrunDoSaveState(slot);
             break;
         case SPEEDRUN_MENU_LOAD:
-            mgr->AddRequest({ slot, RequestType::LOAD });
+            SpeedrunDoLoadState(slot);
             break;
         case SPEEDRUN_MENU_EXPORT:
             // Export keeps the native save dialog (modal; runs here on the game thread).
@@ -238,7 +388,7 @@ static void SpeedrunConfirmMacroSelection() {
             SpeedrunEnterImportScreen();
             break;
         case SPEEDRUN_MENU_SLOT:
-            mgr->SetCurrentSlot((slot + 1) % 6);
+            mgr->SetCurrentSlot((slot + 1) % kSpeedrunSlotCount);
             break;
         case SPEEDRUN_MENU_BACK:
             SpeedrunGoToScreen(SPEEDRUN_SCREEN_ROOT);
@@ -385,9 +535,16 @@ static void SpeedrunHandleMacroScreen(Input* input) {
     if (sel == SPEEDRUN_MENU_SLOT) {
         const unsigned int slot = SpeedrunCurrentSlot();
         if (CHECK_BTN_ALL(pressed, BTN_DRIGHT)) {
-            OTRGlobals::Instance->gSaveStateMgr->SetCurrentSlot((slot + 1) % 6);
+            OTRGlobals::Instance->gSaveStateMgr->SetCurrentSlot((slot + 1) % kSpeedrunSlotCount);
         } else if (CHECK_BTN_ALL(pressed, BTN_DLEFT)) {
-            OTRGlobals::Instance->gSaveStateMgr->SetCurrentSlot((slot + 5) % 6);
+            OTRGlobals::Instance->gSaveStateMgr->SetCurrentSlot((slot + kSpeedrunSlotCount - 1) % kSpeedrunSlotCount);
+        }
+    } else if (sel == SPEEDRUN_MENU_MACRO_FRAME) {
+        const size_t frame = sMovieFrame.load();
+        if (CHECK_BTN_ALL(pressed, BTN_DRIGHT)) {
+            SpeedrunMovieSeek(frame + 1);
+        } else if (CHECK_BTN_ALL(pressed, BTN_DLEFT) && frame > 0) {
+            SpeedrunMovieSeek(frame - 1);
         }
     }
 
@@ -565,7 +722,8 @@ static void OnGameStateMainStartSpeedrunMode() {
     // Keep the overlay shown while the menu is open OR any watch is active (watches draw
     // on screen during play). Otherwise hide it to avoid a stray borderless window.
     if (sOverlay != nullptr) {
-        const bool want = sMenuOpen.load() || SpeedrunWatch_Count() > 0 || sPaused.load();
+        const bool want =
+            sMenuOpen.load() || SpeedrunWatch_Count() > 0 || sPaused.load() || sMovieState.load() != MOVIE_IDLE;
         if (sOverlay->IsVisible() != want) {
             if (want) {
                 sOverlay->Show();
@@ -583,22 +741,19 @@ static void OnGameStateMainStartSpeedrunMode() {
     // savestate, so the freeze state stays independent of save/load.
     gPlayState->frameAdvCtx.enabled = sPaused.load() ? 1 : 0;
 
+    // Command layer: reads the live (physical) pad. It runs BEFORE the macro driver overwrites the pad on
+    // playback, so a playing macro never re-triggers these hotkeys and you can still drive the menu mid-playback.
     if (!sMenuOpen.load()) {
-        // R + C-Down opens the menu, returning to whatever screen/selection was active
-        // when it was last closed.
         if (rHeld && cDownPressed) {
+            // R + C-Down opens the menu, returning to the screen/selection active when last closed.
             sMenuOpen.store(true);
             SpeedrunSuppressDpad(input);
-            return;
-        }
-        // Quick hotkeys while playing.
-        if (CHECK_BTN_ALL(input->press.button, BTN_DLEFT)) {
-            OTRGlobals::Instance->gSaveStateMgr->AddRequest({ SpeedrunCurrentSlot(), RequestType::SAVE });
+        } else if (CHECK_BTN_ALL(input->press.button, BTN_DLEFT)) {
+            SpeedrunDoSaveState(SpeedrunCurrentSlot());
         } else if (CHECK_BTN_ALL(input->press.button, BTN_DRIGHT)) {
-            OTRGlobals::Instance->gSaveStateMgr->AddRequest({ SpeedrunCurrentSlot(), RequestType::LOAD });
+            SpeedrunDoLoadState(SpeedrunCurrentSlot());
         } else if (CHECK_BTN_ALL(input->press.button, BTN_DUP)) {
             // Frame advance: first press freezes on the current frame, each further press steps one frame.
-            // The tick CVar self-clears after one frame; the freeze itself is driven above from sPaused.
             if (sPaused.load()) {
                 CVarSetInteger(CVAR_DEVELOPER_TOOLS("FrameAdvanceTick"), 1); // step exactly one frame
             } else {
@@ -607,35 +762,42 @@ static void OnGameStateMainStartSpeedrunMode() {
         } else if (CHECK_BTN_ALL(input->press.button, BTN_DDOWN)) {
             sPaused.store(false); // resume
         }
-        return;
-    }
-
-    // Menu is open. Synthesize repeat presses for a held D-pad so lists keep scrolling,
-    // then R + C-Down closes it; a bare C-Down confirms (handled per screen).
-    SpeedrunApplyDpadRepeat(input);
-    if (rHeld && cDownPressed) {
-        sMenuOpen.store(false);
-    } else if (sScreen.load() == SPEEDRUN_SCREEN_IMPORT) {
-        SpeedrunHandleImportScreen(input);
-    } else if (sScreen.load() == SPEEDRUN_SCREEN_WARP_CAT) {
-        SpeedrunHandleWarpCatScreen(input);
-    } else if (sScreen.load() == SPEEDRUN_SCREEN_WARP_PLACE) {
-        SpeedrunHandleWarpPlaceScreen(input);
-    } else if (sScreen.load() == SPEEDRUN_SCREEN_WARP_ENTRANCE) {
-        SpeedrunHandleWarpEntranceScreen(input);
-    } else if (sScreen.load() == SPEEDRUN_SCREEN_WATCHES) {
-        SpeedrunHandleWatchesScreen(input);
-    } else if (sScreen.load() == SPEEDRUN_SCREEN_WATCH_ADD) {
-        SpeedrunHandleWatchAddScreen(input);
-    } else if (sScreen.load() == SPEEDRUN_SCREEN_WATCH_EDIT) {
-        SpeedrunHandleWatchEditScreen(input);
-    } else if (sScreen.load() == SPEEDRUN_SCREEN_MACRO) {
-        SpeedrunHandleMacroScreen(input);
     } else {
-        SpeedrunHandleRootScreen(input);
+        // Menu is open. Synthesize repeat presses for a held D-pad so lists keep scrolling,
+        // then R + C-Down closes it; a bare C-Down confirms (handled per screen).
+        SpeedrunApplyDpadRepeat(input);
+        if (rHeld && cDownPressed) {
+            sMenuOpen.store(false);
+        } else if (sScreen.load() == SPEEDRUN_SCREEN_IMPORT) {
+            SpeedrunHandleImportScreen(input);
+        } else if (sScreen.load() == SPEEDRUN_SCREEN_WARP_CAT) {
+            SpeedrunHandleWarpCatScreen(input);
+        } else if (sScreen.load() == SPEEDRUN_SCREEN_WARP_PLACE) {
+            SpeedrunHandleWarpPlaceScreen(input);
+        } else if (sScreen.load() == SPEEDRUN_SCREEN_WARP_ENTRANCE) {
+            SpeedrunHandleWarpEntranceScreen(input);
+        } else if (sScreen.load() == SPEEDRUN_SCREEN_WATCHES) {
+            SpeedrunHandleWatchesScreen(input);
+        } else if (sScreen.load() == SPEEDRUN_SCREEN_WATCH_ADD) {
+            SpeedrunHandleWatchAddScreen(input);
+        } else if (sScreen.load() == SPEEDRUN_SCREEN_WATCH_EDIT) {
+            SpeedrunHandleWatchEditScreen(input);
+        } else if (sScreen.load() == SPEEDRUN_SCREEN_MACRO) {
+            SpeedrunHandleMacroScreen(input);
+        } else {
+            SpeedrunHandleRootScreen(input);
+        }
+        SpeedrunSuppressDpad(input); // only the D-pad is captured; the game keeps the rest
+        // C-Down drives the menu (confirm / close), so don't let it also use the C-Down item underneath.
+        input->cur.button &= ~BTN_CDOWN;
+        input->press.button &= ~BTN_CDOWN;
+        input->rel.button &= ~BTN_CDOWN;
     }
 
-    SpeedrunSuppressDpad(input); // only the D-pad is captured; the game keeps the rest
+    // Macro driver (gz-style): runs once per advancing game frame, AFTER the command layer. Frozen frames
+    // during frame-advance don't count.
+    const bool advancing = !sPaused.load() || CVarGetInteger(CVAR_DEVELOPER_TOOLS("FrameAdvanceTick"), 0) != 0;
+    SpeedrunMovieTick(input, advancing);
 }
 
 // Borderless, input-less overlay window; we draw through the foreground draw list so
@@ -684,6 +846,18 @@ class SpeedrunMenuOverlay final : public Ship::GuiWindow {
             const ImU32 bar = IM_COL32(255, 255, 255, 235);
             dl->AddRectFilled(ImVec2(cx - gap * 0.5f - w, cy - h * 0.5f), ImVec2(cx - gap * 0.5f, cy + h * 0.5f), bar);
             dl->AddRectFilled(ImVec2(cx + gap * 0.5f, cy - h * 0.5f), ImVec2(cx + gap * 0.5f + w, cy + h * 0.5f), bar);
+        }
+
+        // Macro record/playback indicator (frame / length), shown with the menu closed, under the pause bar.
+        {
+            const int mstate = sMovieState.load();
+            if (mstate == MOVIE_RECORDING) {
+                overlay->TextDraw(vp->Size.x * 0.045f, vp->Size.y * 0.11f, true, ImVec4(1.0f, 0.35f, 0.35f, 1.0f),
+                                  "* REC %u / %u", (unsigned)sMovieFrame.load(), (unsigned)sMovieLength.load());
+            } else if (mstate == MOVIE_PLAYING) {
+                overlay->TextDraw(vp->Size.x * 0.045f, vp->Size.y * 0.11f, true, ImVec4(0.4f, 1.0f, 0.55f, 1.0f),
+                                  "> PLAY %u / %u", (unsigned)sMovieFrame.load(), (unsigned)sMovieLength.load());
+            }
         }
 
         if (sMenuOpen.load()) {
@@ -783,15 +957,37 @@ class SpeedrunMenuOverlay final : public Ship::GuiWindow {
 
     void DrawMacroScreen(const std::shared_ptr<Ship::GameOverlay>& overlay) {
         const unsigned int slot = SpeedrunCurrentSlot();
+        const int mstate = sMovieState.load();
+        const size_t len = sMovieLength.load();
+        const size_t frame = sMovieFrame.load();
+        const bool hasClip = len > 0;
         std::vector<std::string> rows = {
             "return",
+            mstate == MOVIE_RECORDING ? "record macro (recording)" : "record macro",
+            mstate == MOVIE_PLAYING ? "play macro (playing)" : "play macro",
+            "rewind macro",
+            "trim macro",
+            "macro frame < " + std::to_string(frame) + " / " + std::to_string(len) + " >",
+            "quick record movie",
+            "quick play movie",
             "save state",
             "load state",
-            "export to disk",
-            "import from disk",
+            "export state to disk",
+            "import state from disk",
             "slot < " + std::to_string(slot) + " >",
         };
-        DrawList(overlay, rows, sMenuSel.load());
+        const std::vector<bool> enabled = {
+            true,                               // return
+            true,                               // record macro
+            hasClip,                            // play macro
+            hasClip,                            // rewind
+            hasClip,                            // trim
+            hasClip,                            // macro frame
+            true,                               // quick record
+            sSlotMovieFrame[0] == 0 && hasClip, // quick play (needs the slot-0 frame-0 anchor)
+            true, true, true, true, true,       // save / load / export / import / slot
+        };
+        DrawList(overlay, rows, sMenuSel.load(), &enabled);
     }
 
     void DrawImportScreen(const std::shared_ptr<Ship::GameOverlay>& overlay) {

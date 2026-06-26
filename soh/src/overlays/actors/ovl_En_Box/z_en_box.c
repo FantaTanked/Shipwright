@@ -419,7 +419,7 @@ void EnBox_WaitOpen(EnBox* this, PlayState* play) {
 
     this->alpha = 255;
     this->movementFlags |= ENBOX_MOVE_IMMOBILE;
-    if (this->unk_1F4 != 0) { // unk_1F4 is modified by player code
+    if (!this->isHidden && this->unk_1F4 != 0) { // unk_1F4 is modified by player code
         linkAge = gSaveContext.linkAge;
         anim = sAnimations[(this->unk_1F4 < 0 ? 2 : 0) + linkAge];
         frameCount = Animation_GetLastFrame(anim);
@@ -433,10 +433,13 @@ void EnBox_WaitOpen(EnBox* this, PlayState* play) {
                 case ENBOX_TYPE_SWITCH_FLAG_FALL_SMALL:
                     break;
                 default:
-                    Actor_SpawnAsChild(&play->actorCtx, &this->dyna.actor, play, ACTOR_DEMO_TRE_LGT,
-                                       this->dyna.actor.world.pos.x, this->dyna.actor.world.pos.y,
-                                       this->dyna.actor.world.pos.z, this->dyna.actor.shape.rot.x,
-                                       this->dyna.actor.shape.rot.y, this->dyna.actor.shape.rot.z, 0xFFFF);
+                    // Ass chest: stay invisible by skipping the opening light (keep the jingle).
+                    if (!this->isHidden) {
+                        Actor_SpawnAsChild(&play->actorCtx, &this->dyna.actor, play, ACTOR_DEMO_TRE_LGT,
+                                           this->dyna.actor.world.pos.x, this->dyna.actor.world.pos.y,
+                                           this->dyna.actor.world.pos.z, this->dyna.actor.shape.rot.x,
+                                           this->dyna.actor.shape.rot.y, this->dyna.actor.shape.rot.z, 0xFFFF);
+                    }
                     Audio_PlayFanfare(NA_BGM_OPEN_TRE_BOX | 0x900);
             }
         }
@@ -444,10 +447,16 @@ void EnBox_WaitOpen(EnBox* this, PlayState* play) {
         Flags_SetTreasure(play, this->dyna.actor.params & 0x1F);
     } else {
         player = GET_PLAYER(play);
-        Actor_WorldToActorCoords(&this->dyna.actor, &sp4C, &player->actor.world.pos);
-        if (sp4C.z > -50.0f && sp4C.z < 0.0f && fabsf(sp4C.y) < 10.0f && fabsf(sp4C.x) < 20.0f &&
-            Player_IsFacingActor(&this->dyna.actor, 0x3000, play)) {
-            Actor_OfferGetItemNearby(&this->dyna.actor, play, -(this->dyna.actor.params >> 5 & 0x7F));
+        if (this->isHidden) {
+            // Ass chest (chest form) never latches, so it stays reopenable.
+            this->unk_1F4 = 0;
+            Actor_OfferGetItem(&this->dyna.actor, play, -(this->dyna.actor.params >> 5 & 0x7F), 10000.0f, 50.0f);
+        } else {
+            Actor_WorldToActorCoords(&this->dyna.actor, &sp4C, &player->actor.world.pos);
+            if (sp4C.z > -50.0f && sp4C.z < 0.0f && fabsf(sp4C.y) < 10.0f && fabsf(sp4C.x) < 20.0f &&
+                Player_IsFacingActor(&this->dyna.actor, 0x3000, play)) {
+                Actor_OfferGetItemNearby(&this->dyna.actor, play, -(this->dyna.actor.params >> 5 & 0x7F));
+            }
         }
         if (Flags_GetTreasure(play, this->dyna.actor.params & 0x1F)) {
             EnBox_SetupAction(this, EnBox_Open);
@@ -706,6 +715,10 @@ Gfx* func_809CA518(GraphicsContext* gfxCtx) {
 
 void EnBox_Draw(Actor* thisx, PlayState* play) {
     EnBox* this = (EnBox*)thisx;
+
+    if (this->isHidden) {
+        return;
+    }
 
     OPEN_DISPS(play->state.gfxCtx);
 

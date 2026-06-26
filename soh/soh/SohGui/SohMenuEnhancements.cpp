@@ -138,11 +138,14 @@ static const std::map<int32_t, const char*> mirroredWorldModes = {
 
 static const std::map<int32_t, const char*> assChestItemValues = {
     { 0, "Off (vanilla junk)" },
-    { 1, "Spooky Mask" },
-    { 2, "Fire Arrows" },
-    { 3, "Hookshot" },
-    { 4, "Biggoron's Sword" },
-    { 5, "Gold Scale" },
+    { 1, "Hookshot" },
+    { 2, "Spooky Mask" },
+    { 3, "Giant's Knife" },
+    { 4, "Gold Scale" },
+    { 5, "Recovery Heart" },
+    { 6, "Fire Arrows" },
+    { 7, "30 Bombs" },
+    { 8, "30 Deku Stick Upgrade" },
 };
 
 void SohMenu::AddMenuEnhancements() {
@@ -1530,6 +1533,12 @@ void SohMenu::AddMenuEnhancements() {
                          "Archery game gives when you win it while already holding the maximum quiver (or none). "
                          "On console the item depends on game version/memory; here you pick it. \"Off\" keeps the "
                          "original (undefined) behavior."));
+    AddWidget(path, "Instant Give##AssChest", WIDGET_CVAR_CHECKBOX)
+        .CVar(CVAR_ENHANCEMENT("AssChestInstant"))
+        .PreFunc([](WidgetInfo& info) { info.isHidden = CVarGetInteger(CVAR_ENHANCEMENT("AssChestItem"), 0) == 0; })
+        .Options(CheckboxOptions().DefaultValue(false).Tooltip(
+            "On: the chosen item is given instantly over Link's head - the non-chest, one-time form. "
+            "Off: it comes from the chest with the full opening animation, which is reopenable."));
 
     AddWidget(path, "Frogs' Ocarina Game", WIDGET_SEPARATOR_TEXT);
     AddWidget(path, "Customize Behavior##Frogs", WIDGET_CVAR_CHECKBOX)

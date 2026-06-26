@@ -46,6 +46,7 @@ typedef struct EnBox {
     /* 0x01F9 */ u8 type;
     /* 0x01FA */ u8 iceSmokeTimer;
     /* 0x01FB */ u8 unk_1FB;
+    /*        */ u8 isHidden; // SoH: when set, the chest is never drawn (used by the ass chest enhancement)
     /*        */ GetItemEntry getItemEntry; // This is only to determine the Chest Style, randomzier item gives are handled elsewhere
     /*        */ Gfx* boxLidDL;
     /*        */ Gfx* boxBodyDL;

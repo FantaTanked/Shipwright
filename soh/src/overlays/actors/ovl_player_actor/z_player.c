@@ -7397,6 +7397,11 @@ s32 Player_ActionHandler_2(Player* this, PlayState* play) {
                         chest->dyna.actor.world.pos.x - (Math_SinS(chest->dyna.actor.shape.rot.y) * 29.4343f);
                     this->actor.world.pos.z =
                         chest->dyna.actor.world.pos.z - (Math_CosS(chest->dyna.actor.shape.rot.y) * 29.4343f);
+                    // Ass chest is spawned mid-air relative to the player on slopes; snap Link to
+                    // the chest's height so he doesn't clip underground during the animation.
+                    if (chest->isHidden) {
+                        this->actor.world.pos.y = chest->dyna.actor.world.pos.y;
+                    }
                     this->yaw = this->actor.shape.rot.y = chest->dyna.actor.shape.rot.y;
                     func_80832224(this);
 

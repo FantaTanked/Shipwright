@@ -7,6 +7,7 @@
 #include "z_en_ge1.h"
 #include "vt.h"
 #include "objects/object_ge1/object_ge1.h"
+#include "overlays/actors/ovl_En_Box/z_en_box.h"
 #include "soh/Enhancements/randomizer/randomizer_entrance.h"
 #include "soh/ResourceManagerHelpers.h"
 #include "soh/Enhancements/game-interactor/GameInteractor_Hooks.h"
@@ -496,23 +497,55 @@ void EnGe1_GetReaction_GateGuard(EnGe1* this, PlayState* play) {
 
 // Archery functions
 
-// Asschest: optional chosen payout when the archery quiver prize falls through to
-// junk (no/maxed quiver). CVar 0 = vanilla junk; 1..N selects from this table.
+// Asschest: the real glitch's prize comes from an (invisible) chest behind the Gerudo.
+// When the enhancement is on we spawn that chest holding a chosen item; CVar 0 = off
+// (vanilla junk give), 1..N selects from this table.
+#define ASSCHEST_TREASURE_FLAG 0x1F
+
 static const s32 sAssChestItems[] = {
-    GI_MASK_SPOOKY,  // Spooky Mask (NTSC 1.0/1.2/VC)
-    GI_ARROW_FIRE,   // Fire Arrows (NTSC 1.1/GC/MQ-J)
-    GI_HOOKSHOT,     // Hookshot
-    GI_SWORD_BGS,    // Biggoron's Sword
-    GI_SCALE_GOLDEN, // Gold Scale
+    GI_HOOKSHOT,         // Hookshot (chest index 0x08)
+    GI_MASK_SPOOKY,      // Spooky Mask (chest index 0x18)
+    GI_SWORD_KNIFE,      // Giant's Knife / Biggoron's Sword (chest index 0x28)
+    GI_SCALE_GOLDEN,     // Gold Scale (chest index 0x38)
+    GI_HEART,            // Recovery Heart (chest index 0x48)
+    GI_ARROW_FIRE,       // Fire Arrows (chest index 0x58)
+    GI_BOMBS_30,         // 30 Bombs (chest index 0x68)
+    GI_STICK_UPGRADE_30, // Deku Stick Upgrade (chest index 0x78)
 };
 
-static bool EnGe1_TryGetAsschestItem(s32* getItemId) {
+// True once the archery prize has fallen through to the asschest case (prize owed, quiver
+// not 30/40) and the enhancement has a valid item picked.
+static bool EnGe1_AsschestActive(EnGe1* this) {
     s32 sel = CVarGetInteger(CVAR_ENHANCEMENT("AssChestItem"), 0);
-    if (sel >= 1 && sel <= (s32)ARRAY_COUNT(sAssChestItems)) {
-        *getItemId = sAssChestItems[sel - 1];
-        return true;
+    s32 quiver = CUR_UPG_VALUE(UPG_QUIVER);
+    return (this->stateFlags & GE1_STATE_GIVE_QUIVER) && (quiver != 1) && (quiver != 2) && (sel >= 1) &&
+           (sel <= (s32)ARRAY_COUNT(sAssChestItems));
+}
+
+// Instant (one-time) form when the toggle is on; chest (repeatable) form otherwise.
+static bool EnGe1_AsschestInstant(void) {
+    return CVarGetInteger(CVAR_ENHANCEMENT("AssChestInstant"), 0) != 0;
+}
+
+static s32 EnGe1_GetAsschestItem(void) {
+    return sAssChestItems[CVarGetInteger(CVAR_ENHANCEMENT("AssChestItem"), 0) - 1];
+}
+
+// Spawns the invisible ass chest behind the Gerudo, holding the chosen item.
+static void EnGe1_SpawnAsschest(EnGe1* this, PlayState* play) {
+    EnBox* box;
+
+    play->actorCtx.flags.chest &= ~(1 << ASSCHEST_TREASURE_FLAG);
+    // Spawn the chest on the Gerudo facing the same way she does, so the chest-open teleports
+    // the player behind her (as on console) to play the animation.
+    box = (EnBox*)Actor_Spawn(&play->actorCtx, play, ACTOR_EN_BOX, this->actor.world.pos.x, this->actor.world.pos.y,
+                              this->actor.world.pos.z, 0, this->actor.shape.rot.y, 0,
+                              ENBOX_PARAMS(ENBOX_TYPE_BIG_DEFAULT, EnGe1_GetAsschestItem(), ASSCHEST_TREASURE_FLAG));
+    if (box != NULL) {
+        box->isHidden = true;
+        // Strip the chest's collision so the invisible box can't be bumped into.
+        func_8003EBF8(play, &play->colCtx.dyna, box->dyna.bgId);
     }
-    return false;
 }
 
 void EnGe1_SetupWait_Archery(EnGe1* this, PlayState* play) {
@@ -548,8 +581,10 @@ void EnGe1_WaitTillItemGiven_Archery(EnGe1* this, PlayState* play) {
                     getItemId = GI_QUIVER_50;
                     break;
                 default:
-                    // Asschest: vanilla reads junk here; optionally award a chosen item.
-                    EnGe1_TryGetAsschestItem(&getItemId);
+                    // Asschest instant form: give the chosen item directly (positive id).
+                    if (EnGe1_AsschestActive(this)) {
+                        getItemId = EnGe1_GetAsschestItem();
+                    }
                     break;
             }
         } else {
@@ -562,10 +597,23 @@ void EnGe1_WaitTillItemGiven_Archery(EnGe1* this, PlayState* play) {
 void EnGe1_BeginGiveItem_Archery(EnGe1* this, PlayState* play) {
     GetItemEntry getItemEntry = (GetItemEntry)GET_ITEM_NONE;
     s32 getItemId;
+    bool chestForm = EnGe1_AsschestActive(this) && !EnGe1_AsschestInstant();
 
     if (Actor_TextboxIsClosing(&this->actor, play)) {
         this->actor.flags &= ~ACTOR_FLAG_TALK_OFFER_AUTO_ACCEPTED;
+        // Asschest chest form: spawn the invisible chest behind the Gerudo (repeatable). The
+        // instant form falls through to give the chosen item directly (one-time).
+        if (chestForm) {
+            EnGe1_SpawnAsschest(this, play);
+            Flags_SetItemGetInf(ITEMGETINF_0F);
+            this->actionFunc = EnGe1_SetupWait_Archery;
+            return;
+        }
         this->actionFunc = EnGe1_WaitTillItemGiven_Archery;
+    }
+
+    if (chestForm) {
+        return; // the spawned chest gives the item; the Gerudo never offers it
     }
 
     if (this->stateFlags & GE1_STATE_GIVE_QUIVER) {
@@ -581,8 +629,10 @@ void EnGe1_BeginGiveItem_Archery(EnGe1* this, PlayState* play) {
                 getItemId = GI_QUIVER_50;
                 break;
             default:
-                // Asschest: vanilla reads junk here; optionally award a chosen item.
-                EnGe1_TryGetAsschestItem(&getItemId);
+                // Asschest instant form: give the chosen item directly (positive id).
+                if (EnGe1_AsschestActive(this)) {
+                    getItemId = EnGe1_GetAsschestItem();
+                }
                 break;
         }
     } else {

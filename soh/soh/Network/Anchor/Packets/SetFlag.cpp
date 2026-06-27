@@ -17,7 +17,9 @@ extern PlayState* gPlayState;
  */
 
 void Anchor::SendPacket_SetFlag(s16 sceneNum, s16 flagType, s16 flag) {
-    if (!IsSaveLoaded() || !roomState.syncItemsAndFlags) {
+    // IsSaveActive (not IsSaveLoaded): intro/area cutscene flags are set during Play_Init before the
+    // player actor spawns, and must still broadcast so teammates don't re-watch the cutscene.
+    if (!IsSaveActive() || !roomState.syncItemsAndFlags) {
         return;
     }
 

@@ -22,6 +22,7 @@ extern "C" {
 #include "src/overlays/actors/ovl_Bg_Spot17_Bakudankabe/z_bg_spot17_bakudankabe.h"
 #include "src/overlays/actors/ovl_Bg_Ydan_Maruta/z_bg_ydan_maruta.h"
 #include "src/overlays/actors/ovl_Bg_Ydan_Sp/z_bg_ydan_sp.h"
+#include "src/overlays/actors/ovl_Demo_Kekkai/z_demo_kekkai.h"
 #include "src/overlays/actors/ovl_Door_Shutter/z_door_shutter.h"
 #include "src/overlays/actors/ovl_En_Door/z_en_door.h"
 #include "src/overlays/actors/ovl_En_Si/z_en_si.h"
@@ -53,6 +54,7 @@ void BgYdanSp_FloorWebIdle(BgYdanSp* bgYdanSp, PlayState* play);
 void BgYdanSp_WallWebIdle(BgYdanSp* bgYdanSp, PlayState* play);
 void BgYdanSp_BurnWeb(BgYdanSp* bgYdanSp, PlayState* play);
 void EnDoor_Idle(EnDoor* enDoor, PlayState* play);
+s32 DemoKekkai_CheckEventFlag(s32 params);
 float OTRGetDimensionFromLeftEdge(float v);
 float OTRGetDimensionFromRightEdge(float v);
 }
@@ -92,11 +94,23 @@ void Anchor::RegisterHooks() {
         if (justLoadedSave) {
             justLoadedSave = false;
             SendPacket_RequestTeamState();
+            // Baseline the upgrade cache so loading a file doesn't re-broadcast existing upgrades.
+            syncedMagicState = (gSaveContext.isMagicAcquired ? 1 : 0) | (gSaveContext.isDoubleMagicAcquired ? 2 : 0) |
+                               (gSaveContext.isDoubleDefenseAcquired ? 4 : 0);
         }
 
         if (shouldRefreshActors) {
             shouldRefreshActors = false;
             RefreshClientActors();
+        }
+
+        // Great Fairy magic/defense upgrades bypass the item hooks, so detect a newly-acquired one and
+        // push it to the team immediately.
+        u8 magicState = (gSaveContext.isMagicAcquired ? 1 : 0) | (gSaveContext.isDoubleMagicAcquired ? 2 : 0) |
+                        (gSaveContext.isDoubleDefenseAcquired ? 4 : 0);
+        if ((magicState & ~syncedMagicState) != 0) {
+            SendPacket_UpdateUpgrades();
+            syncedMagicState = magicState;
         }
 
         SendPacket_PlayerUpdate();
@@ -146,6 +160,12 @@ void Anchor::RegisterHooks() {
     COND_ID_HOOK(OnBossDefeat, ACTOR_BOSS_GANON2, isConnected, [&](void* refActor) { SendPacket_GameComplete(); });
 
     COND_HOOK(OnItemReceive, isConnected, [&](GetItemEntry itemEntry) {
+        // ITEM_SOLD_OUT is the consumed-trade-item placeholder (carries getItemId 0), not a real item.
+        // Trade slots are kept local, so don't broadcast it; on a receiver it resolves to ITEM_NONE.
+        if (itemEntry.modIndex == MOD_NONE && itemEntry.itemId == ITEM_SOLD_OUT) {
+            return;
+        }
+
         // Handle vanilla dungeon items a bit differently
         if (itemEntry.modIndex == MOD_NONE &&
             (itemEntry.itemId >= ITEM_KEY_BOSS && itemEntry.itemId <= ITEM_KEY_SMALL)) {
@@ -194,6 +214,38 @@ void Anchor::RegisterHooks() {
         EnItem00* actor = static_cast<EnItem00*>(refActor);
 
         if (Flags_GetCollectible(gPlayState, actor->collectibleFlag)) {
+            Actor_Kill(&actor->actor);
+        }
+    });
+
+    COND_ID_HOOK(OnActorUpdate, ACTOR_DEMO_KEKKAI, isConnected, [&](void* refActor) {
+        DemoKekkai* actor = static_cast<DemoKekkai*>(refActor);
+
+        // A teammate completing a Ganon's Castle trial sets the shared event flag; the barrier only
+        // checks it at Init, so remove it live here to mirror their progress.
+        bool dispel = DemoKekkai_CheckEventFlag(actor->actor.params);
+
+        // The tower barrier is normally dispelled by a cutscene that sets DISPELLED_GANONS_TOWER_BARRIER.
+        // In co-op all 6 trial flags can arrive via sync without that cutscene ever playing, which would
+        // leave the tower barrier stuck. So also drop it once every trial is complete, and record the flag.
+        // Gate on no cutscene active/pending so the player who actually clears the last trial still sees
+        // the normal dispel cutscene (this only rescues the stuck/synced case).
+        if (actor->actor.params == KEKKAI_TOWER && !dispel &&
+            gPlayState->csCtx.state == CS_STATE_IDLE && gSaveContext.cutsceneTrigger == 0 &&
+            Flags_GetEventChkInf(EVENTCHKINF_COMPLETED_FOREST_TRIAL) &&
+            Flags_GetEventChkInf(EVENTCHKINF_COMPLETED_WATER_TRIAL) &&
+            Flags_GetEventChkInf(EVENTCHKINF_COMPLETED_SHADOW_TRIAL) &&
+            Flags_GetEventChkInf(EVENTCHKINF_COMPLETED_FIRE_TRIAL) &&
+            Flags_GetEventChkInf(EVENTCHKINF_COMPLETED_LIGHT_TRIAL) &&
+            Flags_GetEventChkInf(EVENTCHKINF_COMPLETED_SPIRIT_TRIAL)) {
+            Flags_SetEventChkInf(EVENTCHKINF_DISPELLED_GANONS_TOWER_BARRIER);
+            dispel = true;
+        }
+
+        if (dispel) {
+            if (actor->actor.params == KEKKAI_TOWER) {
+                gPlayState->envCtx.unk_BF = 1;
+            }
             Actor_Kill(&actor->actor);
         }
     });

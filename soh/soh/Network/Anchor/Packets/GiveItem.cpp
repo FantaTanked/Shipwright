@@ -20,7 +20,10 @@ extern PlayState* gPlayState;
 uint8_t incomingIceTrapsFromAnchor = 0;
 
 void Anchor::SendPacket_GiveItem(u16 modId, s16 getItemId) {
-    if (!IsSaveLoaded() || isProcessingIncomingPacket || !roomState.syncItemsAndFlags) {
+    // IsSaveActive: items granted inside a transition cutscene (e.g. Saria's fairy ocarina, given in
+    // Play_Init before the player spawns) must still propagate, else a teammate who skips the synced
+    // cutscene never receives the item.
+    if (!IsSaveActive() || isProcessingIncomingPacket || !roomState.syncItemsAndFlags) {
         return;
     }
 
@@ -59,6 +62,12 @@ void Anchor::HandlePacket_GiveItem(nlohmann::json payload) {
         getItemEntry = ItemTableManager::Instance->RetrieveItemEntry(MOD_NONE, getItemId);
     } else {
         getItemEntry = Rando::StaticData::RetrieveItem(static_cast<RandomizerGet>(getItemId)).GetGIEntry_Copy();
+    }
+
+    // A placeholder/unknown getItemId (e.g. ITEM_SOLD_OUT, sent as 0) resolves to the empty entry. Giving it
+    // would call Item_Give(ITEM_NONE), which corrupts the inventory via an out-of-bounds slot lookup.
+    if (getItemEntry.modIndex == MOD_NONE && getItemEntry.itemId == ITEM_NONE) {
+        return;
     }
 
     if (getItemEntry.modIndex == MOD_NONE) {

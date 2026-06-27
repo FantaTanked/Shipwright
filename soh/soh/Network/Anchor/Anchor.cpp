@@ -170,6 +170,8 @@ void Anchor::ProcessIncomingPacketQueue() {
                 HandlePacket_UpdateRoomState(payload);
             else if (packetType == UPDATE_DUNGEON_ITEMS)
                 HandlePacket_UpdateDungeonItems(payload);
+            else if (packetType == UPDATE_UPGRADES)
+                HandlePacket_UpdateUpgrades(payload);
         } catch (const std::exception& e) {
             SPDLOG_ERROR("[Anchor] Exception while processing incoming packet {}", e.what());
             SPDLOG_ERROR("[Anchor] Packet: {}", payload.dump());
@@ -235,6 +237,24 @@ bool Anchor::IsSaveLoaded() {
     }
 
     if (GET_PLAYER(gPlayState) == nullptr) {
+        return false;
+    }
+
+    if (gSaveContext.fileNum < 0 || gSaveContext.fileNum > 2) {
+        return false;
+    }
+
+    if (gSaveContext.gameMode != GAMEMODE_NORMAL) {
+        return false;
+    }
+
+    return true;
+}
+
+// Like IsSaveLoaded but does not require the player actor to be spawned, so flag/item sends fired during a
+// scene transition (e.g. intro cutscene flags set in Play_Init before the player exists) still broadcast.
+bool Anchor::IsSaveActive() {
+    if (gPlayState == nullptr) {
         return false;
     }
 

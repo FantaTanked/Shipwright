@@ -134,45 +134,60 @@ void Anchor::HandlePacket_UpdateTeamState(nlohmann::json payload) {
     if (payload.contains("state")) {
         SaveContext loadedData = payload["state"].get<SaveContext>();
 
-        gSaveContext.healthCapacity = loadedData.healthCapacity;
-        gSaveContext.magicLevel = loadedData.magicLevel;
-        gSaveContext.magicCapacity = loadedData.magicCapacity;
-        gSaveContext.magic = static_cast<s8>(loadedData.magicCapacity);
-        gSaveContext.isMagicAcquired = loadedData.isMagicAcquired;
-        gSaveContext.isDoubleMagicAcquired = loadedData.isDoubleMagicAcquired;
-        gSaveContext.isDoubleDefenseAcquired = loadedData.isDoubleDefenseAcquired;
-        gSaveContext.bgsFlag = loadedData.bgsFlag;
-        gSaveContext.swordHealth = loadedData.swordHealth;
-        gSaveContext.ship.quest = loadedData.ship.quest;
+        // Co-op progress must be monotonic: a teammate who is behind on an upgrade must never
+        // overwrite a teammate who is ahead. Merge upward (MAX/OR), never assign destructively.
+        if (loadedData.healthCapacity > gSaveContext.healthCapacity) {
+            gSaveContext.healthCapacity = loadedData.healthCapacity;
+        }
+        if (loadedData.magicLevel > gSaveContext.magicLevel) {
+            gSaveContext.magicLevel = loadedData.magicLevel;
+        }
+        if (loadedData.magicCapacity > gSaveContext.magicCapacity) {
+            gSaveContext.magicCapacity = loadedData.magicCapacity;
+        }
+        gSaveContext.isMagicAcquired |= loadedData.isMagicAcquired;
+        gSaveContext.isDoubleMagicAcquired |= loadedData.isDoubleMagicAcquired;
+        gSaveContext.isDoubleDefenseAcquired |= loadedData.isDoubleDefenseAcquired;
+        gSaveContext.bgsFlag |= loadedData.bgsFlag;
+        // Current magic and Giant's Knife durability are per-player consumables; leave them local.
+
+        // Quest id is shared across a team; only the cumulative rando counters need merging.
+        gSaveContext.ship.quest.id = loadedData.ship.quest.id;
+        if (IS_RANDO) {
+            if (loadedData.ship.quest.data.randomizer.triforcePiecesCollected >
+                gSaveContext.ship.quest.data.randomizer.triforcePiecesCollected) {
+                gSaveContext.ship.quest.data.randomizer.triforcePiecesCollected =
+                    loadedData.ship.quest.data.randomizer.triforcePiecesCollected;
+            }
+            if (loadedData.ship.quest.data.randomizer.bombchuUpgradeLevel >
+                gSaveContext.ship.quest.data.randomizer.bombchuUpgradeLevel) {
+                gSaveContext.ship.quest.data.randomizer.bombchuUpgradeLevel =
+                    loadedData.ship.quest.data.randomizer.bombchuUpgradeLevel;
+            }
+        }
 
         for (int i = 0; i < 124; i++) {
-            if (i == SCENE_WATER_TEMPLE) {
-                // Keep water temple water level flags
-                u32 mask = (1 << 0x1C) | (1 << 0x1D) | (1 << 0x1E);
-                loadedData.sceneFlags[i].swch =
-                    (loadedData.sceneFlags[i].swch & ~mask) | (gSaveContext.sceneFlags[i].swch & mask);
-            }
+            // Switch flags hold a couple of non-monotonic state bits (water temple water level,
+            // forest elevator) that must stay local; union every other switch bit. The collapse
+            // timer flag (0x36) is a temp switch outside this 32-bit field, so nothing to keep here.
+            u32 swchKeepLocal = (i == SCENE_WATER_TEMPLE)    ? ((1u << 0x1C) | (1u << 0x1D) | (1u << 0x1E))
+                                : (i == SCENE_FOREST_TEMPLE) ? (1u << 0x1B)
+                                                             : 0u;
+            u32 remoteSwch = loadedData.sceneFlags[i].swch & ~swchKeepLocal;
+            // The Treasure Box Shop re-locks its chests on every play, so its chest flags stay local.
+            u32 remoteChest = (i == SCENE_TREASURE_BOX_SHOP) ? 0u : loadedData.sceneFlags[i].chest;
 
-            if (i == SCENE_FOREST_TEMPLE) {
-                // Keep forest temple elevator flag
-                u32 mask = (1 << 0x1B);
-                loadedData.sceneFlags[i].swch =
-                    (loadedData.sceneFlags[i].swch & ~mask) | (gSaveContext.sceneFlags[i].swch & mask);
-            }
+            gSaveContext.sceneFlags[i].chest |= remoteChest;
+            gSaveContext.sceneFlags[i].swch |= remoteSwch;
+            gSaveContext.sceneFlags[i].clear |= loadedData.sceneFlags[i].clear;
+            gSaveContext.sceneFlags[i].collect |= loadedData.sceneFlags[i].collect;
+            // rooms/floors/unk are map-reveal state not carried in the payload; leave them local.
 
-            if (i == SCENE_GANONS_TOWER_COLLAPSE_EXTERIOR) {
-                // Keep collapse timer flag
-                u32 mask = (1 << 0x36);
-                loadedData.sceneFlags[i].swch =
-                    (loadedData.sceneFlags[i].swch & ~mask) | (gSaveContext.sceneFlags[i].swch & mask);
-            }
-
-            gSaveContext.sceneFlags[i] = loadedData.sceneFlags[i];
             if (IsSaveLoaded() && gPlayState->sceneNum == i) {
-                gPlayState->actorCtx.flags.chest = loadedData.sceneFlags[i].chest;
-                gPlayState->actorCtx.flags.swch = loadedData.sceneFlags[i].swch;
-                gPlayState->actorCtx.flags.clear = loadedData.sceneFlags[i].clear;
-                gPlayState->actorCtx.flags.collect = loadedData.sceneFlags[i].collect;
+                gPlayState->actorCtx.flags.chest |= remoteChest;
+                gPlayState->actorCtx.flags.swch |= remoteSwch;
+                gPlayState->actorCtx.flags.clear |= loadedData.sceneFlags[i].clear;
+                gPlayState->actorCtx.flags.collect |= loadedData.sceneFlags[i].collect;
             }
         }
 
@@ -200,31 +215,83 @@ void Anchor::HandlePacket_UpdateTeamState(nlohmann::json payload) {
         gSaveContext.ship.stats.firstInput = loadedData.ship.stats.firstInput;
         gSaveContext.ship.stats.fileCreatedAt = loadedData.ship.stats.fileCreatedAt;
 
-        // Restore master sword state
-        // Disabling this for now, not really sure I understand why I did this in the past
-        // u8 hasMasterSword = CHECK_OWNED_EQUIP(EQUIP_TYPE_SWORD, 1);
-        // if (hasMasterSword) {
-        //     loadedData.inventory.equipment |= 0x2;
-        // } else {
-        //     loadedData.inventory.equipment &= ~0x2;
-        // }
+        // Inventory must merge as a union of progress, not a wholesale copy (which lets a teammate who
+        // is behind erase items/upgrades). Consumables and non-monotonic slots stay local.
 
-        // Restore bottle contents (unless it's ruto's letter)
-        for (int i = 0; i < 4; i++) {
-            if (gSaveContext.inventory.items[SLOT_BOTTLE_1 + i] != ITEM_NONE &&
-                gSaveContext.inventory.items[SLOT_BOTTLE_1 + i] != ITEM_LETTER_RUTO) {
-                loadedData.inventory.items[SLOT_BOTTLE_1 + i] = gSaveContext.inventory.items[SLOT_BOTTLE_1 + i];
+        // items[]: gain anything we lack; keep the higher tier in the two upgrade-in-place slots
+        // (ocarina, hookshot); the adult/child trade slots are an in-place swap and stay local.
+        for (int i = 0; i < ARRAY_COUNT(gSaveContext.inventory.items); i++) {
+            if (i == SLOT_TRADE_ADULT || i == SLOT_TRADE_CHILD) {
+                continue;
+            }
+            u8 mine = gSaveContext.inventory.items[i];
+            u8 theirs = loadedData.inventory.items[i];
+            if (mine == ITEM_NONE) {
+                gSaveContext.inventory.items[i] = theirs;
+            } else if (theirs != ITEM_NONE && theirs > mine && (i == SLOT_OCARINA || i == SLOT_HOOKSHOT)) {
+                gSaveContext.inventory.items[i] = theirs;
             }
         }
 
-        // Restore ammo if it's non-zero, unless it's beans
+        // ammo[]: consumable; only fill our empty slots from the team (beans propagate as before).
         for (int i = 0; i < ARRAY_COUNT(gSaveContext.inventory.ammo); i++) {
-            if (gSaveContext.inventory.ammo[i] != 0 && i != SLOT(ITEM_BEAN) && i != SLOT(ITEM_BEAN + 1)) {
-                loadedData.inventory.ammo[i] = gSaveContext.inventory.ammo[i];
+            if (gSaveContext.inventory.ammo[i] == 0 || i == SLOT(ITEM_BEAN) || i == SLOT(ITEM_BEAN + 1)) {
+                gSaveContext.inventory.ammo[i] = loadedData.inventory.ammo[i];
             }
         }
 
-        gSaveContext.inventory = loadedData.inventory;
+        // equipment: tunics/boots (high byte) are never lost, so union them; swords/shields (low byte)
+        // have legitimate loss paths (swordless, Giant's Knife break, Like-Like, MS removal) so keep local.
+        gSaveContext.inventory.equipment = (gSaveContext.inventory.equipment & 0x00FF) |
+                                           ((gSaveContext.inventory.equipment | loadedData.inventory.equipment) & 0xFF00);
+
+        // upgrades: packed multi-bit levels (quiver/bomb bag/strength/...); take the higher level per
+        // field. A bitwise OR would corrupt them (e.g. level 1 | level 2 = level 3).
+        for (int i = 0; i < 8; i++) {
+            u32 mineLvl = (gSaveContext.inventory.upgrades & gUpgradeMasks[i]) >> gUpgradeShifts[i];
+            u32 theirLvl = (loadedData.inventory.upgrades & gUpgradeMasks[i]) >> gUpgradeShifts[i];
+            if (theirLvl > mineLvl) {
+                gSaveContext.inventory.upgrades =
+                    (gSaveContext.inventory.upgrades & ~gUpgradeMasks[i]) | (theirLvl << gUpgradeShifts[i]);
+            }
+        }
+
+        // questItems: union the medallion/song/stone flag bits; the top nibble is a heart-piece count,
+        // so take the higher (never OR a count).
+        {
+            u32 mineHp = gSaveContext.inventory.questItems & 0xF0000000;
+            u32 theirHp = loadedData.inventory.questItems & 0xF0000000;
+            gSaveContext.inventory.questItems =
+                ((gSaveContext.inventory.questItems | loadedData.inventory.questItems) & 0x0FFFFFFF) |
+                (theirHp > mineHp ? theirHp : mineHp);
+        }
+
+        // dungeonItems[]: boss key / compass / map are never lost (union). Small keys are consumable
+        // (dungeonKeys[]) and stay local.
+        for (int i = 0; i < ARRAY_COUNT(gSaveContext.inventory.dungeonItems); i++) {
+            gSaveContext.inventory.dungeonItems[i] |= loadedData.inventory.dungeonItems[i];
+        }
+
+        // defenseHearts is the double-defense count (0/20), monotonic.
+        if (loadedData.inventory.defenseHearts > gSaveContext.inventory.defenseHearts) {
+            gSaveContext.inventory.defenseHearts = loadedData.inventory.defenseHearts;
+        }
+
+        // gsTokens is the collected-skulltula count; derive it from the already-unioned gsFlags so the
+        // count and the collected-set never disagree.
+        {
+            s16 tokens = 0;
+            for (int i = 0; i < 6; i++) {
+                u32 bits = (u32)gSaveContext.gsFlags[i];
+                while (bits) {
+                    tokens += bits & 1;
+                    bits >>= 1;
+                }
+            }
+            if (tokens > gSaveContext.inventory.gsTokens) {
+                gSaveContext.inventory.gsTokens = tokens;
+            }
+        }
 
         // The commented out code below is an attempt at sending the entire randomizer seed over, in hopes that a player
         // doesn't have to generate the seed themselves Currently it doesn't work :)

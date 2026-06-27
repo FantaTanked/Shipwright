@@ -73,6 +73,8 @@ class Anchor : public Network {
     uint32_t spawningDummyPlayerForClientId = 0;
     bool shouldRefreshActors = false;
     bool justLoadedSave = false;
+    // Bitmask of magic/defense upgrades (1=magic, 2=double magic, 4=double defense) already pushed to the team.
+    u8 syncedMagicState = 0;
     bool isHandlingUpdateTeamState = false;
     bool isProcessingIncomingPacket = false;
     std::queue<nlohmann::json> incomingPacketQueue;
@@ -106,6 +108,7 @@ class Anchor : public Network {
     void HandlePacket_UpdateBeansCount(nlohmann::json payload);
     void HandlePacket_UpdateClientState(nlohmann::json payload);
     void HandlePacket_UpdateDungeonItems(nlohmann::json payload);
+    void HandlePacket_UpdateUpgrades(nlohmann::json payload);
     void HandlePacket_UpdateRoomState(nlohmann::json payload);
     void HandlePacket_UpdateTeamState(nlohmann::json payload);
 
@@ -135,6 +138,7 @@ class Anchor : public Network {
     inline static const std::string UPDATE_CLIENT_STATE = "UPDATE_CLIENT_STATE";
     inline static const std::string UPDATE_DUNGEON_ITEMS = "UPDATE_DUNGEON_ITEMS";
     inline static const std::string UPDATE_ROOM_STATE = "UPDATE_ROOM_STATE";
+    inline static const std::string UPDATE_UPGRADES = "UPDATE_UPGRADES";
     inline static const std::string UPDATE_TEAM_STATE = "UPDATE_TEAM_STATE";
 
     static Anchor* Instance;
@@ -151,6 +155,7 @@ class Anchor : public Network {
     void ProcessIncomingPacketQueue();
     void SendJsonToRemote(nlohmann::json packet);
     bool IsSaveLoaded();
+    bool IsSaveActive();
     bool CanTeleportTo(uint32_t clientId);
     uint32_t GetDummyPlayerClientId(const Actor* actor);
 
@@ -173,6 +178,7 @@ class Anchor : public Network {
     void SendPacket_UpdateClientState();
     void SendPacket_UpdateDungeonItems();
     void SendPacket_UpdateRoomState();
+    void SendPacket_UpdateUpgrades();
     void SendPacket_UpdateTeamState();
 };
 

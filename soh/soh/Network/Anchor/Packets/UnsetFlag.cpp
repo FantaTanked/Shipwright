@@ -17,7 +17,8 @@ extern PlayState* gPlayState;
  */
 
 void Anchor::SendPacket_UnsetFlag(s16 sceneNum, s16 flagType, s16 flag) {
-    if (!IsSaveLoaded() || !roomState.syncItemsAndFlags) {
+    // IsSaveActive: keep set/unset symmetric for flags changed during a scene transition.
+    if (!IsSaveActive() || !roomState.syncItemsAndFlags) {
         return;
     }
 

@@ -1258,7 +1258,9 @@ void SohMenu::AddMenuEnhancements() {
         .Options(CheckboxOptions().Tooltip(
             "Restores a bug from NTSC 1.0/1.1 that allows you to obtain the eyeball frog from King Zora "
             "instead of the Zora Tunic by Holding Shield."));
-
+    AddWidget(path, "Wrong Warps", WIDGET_CVAR_CHECKBOX)
+        .CVar(CVAR_ENHANCEMENT("WrongWarp"))
+        .Options(CheckboxOptions().Tooltip("Restores cutscene-pointer wrong warps (ganondoor, jabu->DC, 1080, ...)"));
     AddWidget(path, "Misc Restorations", WIDGET_SEPARATOR_TEXT);
     AddWidget(path, "Fix L&Z Page Switch in Pause Menu", WIDGET_CVAR_CHECKBOX)
         .CVar(CVAR_ENHANCEMENT("NGCKaleidoSwitcher"))

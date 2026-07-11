@@ -15,6 +15,7 @@
 void Save_LoadFile(void);
 
 void BossRush_InitSave(void);
+void Speedrun_InitSave(void);
 
 /**
  *  Initialize new save.
@@ -40,6 +41,11 @@ void Sram_InitDebugSave(void) {
 void Sram_InitBossRushSave(void) {
     Save_InitFile(false);
     BossRush_InitSave();
+}
+
+void Sram_InitSpeedrunSave(void) {
+    Save_InitFile(false);
+    Speedrun_InitSave();
 }
 
 static s16 sDungeonEntrances[] = {
@@ -265,6 +271,10 @@ void Sram_InitSave(FileChooseContext* fileChooseCtx) {
         gSaveContext.ship.quest.id = QUEST_RANDOMIZER;
 
         Randomizer_InitSaveFile();
+    } else if (currentQuest == QUEST_SPEEDRUN) {
+        gSaveContext.ship.quest.id = QUEST_SPEEDRUN;
+
+        Speedrun_GenerateSettingsHash();
     } else {
         gSaveContext.ship.quest.id = currentQuest;
     }

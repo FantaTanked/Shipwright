@@ -297,9 +297,11 @@ void Menu::MenuDrawItem(WidgetInfo& widget, uint32_t width, UIWidgets::Colors me
     disabledValue = false;
     disabledTooltip = " ";
 
+    widget.ResetDisables();
+
     if (widget.preFunc != nullptr) {
-        widget.ResetDisables();
         widget.preFunc(widget);
+
         if (widget.isHidden) {
             return;
         }

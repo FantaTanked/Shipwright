@@ -266,7 +266,7 @@ static const ALIGN_ASSET(2) char gSmallHeartCrateDL[] = dgSmallHeartCrateDL;
 #define dgSmallJunkCrateDL "__OTR__objects/object_kibako/gSmallJunkCrateDL"
 static const ALIGN_ASSET(2) char gSmallJunkCrateDL[] = dgSmallJunkCrateDL;
 
-// boss keys
+//boss keys
 #define dgBossKeyCustomDL "__OTR__objects/object_bosskey/gBossKeyCustomDL"
 static const ALIGN_ASSET(2) char gBossKeyCustomDL[] = dgBossKeyCustomDL;
 
@@ -288,11 +288,11 @@ static const ALIGN_ASSET(2) char gBossKeyIconShadowTempleDL[] = dgBossKeyIconSha
 #define dgBossKeyIconGanonsCastleDL "__OTR__objects/object_bosskey/gBossKeyIconGanonsCastleDL"
 static const ALIGN_ASSET(2) char gBossKeyIconGanonsCastleDL[] = dgBossKeyIconGanonsCastleDL;
 
-// skeleton key
+//skeleton key
 #define dgSkeletonKeyDL "__OTR__objects/object_key/gSkeletonKeyDL"
 static const ALIGN_ASSET(2) char gSkeletonKeyDL[] = dgSkeletonKeyDL;
 
-// small keys
+//small keys
 #define dgSmallKeyCustomDL "__OTR__objects/object_key/gSmallKeyCustomDL"
 static const ALIGN_ASSET(2) char gSmallKeyCustomDL[] = dgSmallKeyCustomDL;
 
@@ -326,7 +326,7 @@ static const ALIGN_ASSET(2) char gSmallKeyIconGanonsCastleDL[] = dgSmallKeyIconG
 #define dgSmallKeyIconTreasureChestGameDL "__OTR__objects/object_key/gSmallKeyIconTreasureChestGameDL"
 static const ALIGN_ASSET(2) char gSmallKeyIconTreasureChestGameDL[] = dgSmallKeyIconTreasureChestGameDL;
 
-// keyrings
+//keyrings
 #define dgKeyringRingDL "__OTR__objects/object_keyring/gKeyringRingDL"
 static const ALIGN_ASSET(2) char gKeyringRingDL[] = dgKeyringRingDL;
 

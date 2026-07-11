@@ -8,6 +8,7 @@
 #include "soh/Enhancements/gameplaystats.h"
 #include "soh/Enhancements/randomizer/randomizer_entrance.h"
 #include "soh/Enhancements/boss-rush/BossRush.h"
+#include "soh/Enhancements/speedrun/Speedrun.h"
 
 #define FULL_HEART_HEALTH 0x10
 #define STARTING_HEALTH (3 * FULL_HEART_HEALTH)
@@ -212,9 +213,15 @@ typedef struct ShipBossRushSaveContextData {
     u8 options[BR_OPTIONS_MAX];
 } ShipBossRushSaveContextData;
 
+typedef struct ShipSpeedrunSaveContextData {
+    u8 category;
+    u8 options[SR_OPTIONS_MAX];
+} ShipSpeedrunSaveContextData;
+
 typedef union ShipQuestSpecificSaveContextData {
     ShipRandomizerSaveContextData randomizer;
     ShipBossRushSaveContextData bossRush;
+    ShipSpeedrunSaveContextData speedrun;
 } ShipQuestSpecificSaveContextData;
 
 typedef struct ShipQuestSaveContextData {
@@ -358,12 +365,14 @@ typedef enum {
     /* 01 */ QUEST_MASTER,
     /* 02 */ QUEST_RANDOMIZER,
     /* 03 */ QUEST_BOSSRUSH,
+    /* 04 */ QUEST_SPEEDRUN,
 } Quest;
 
 #define IS_VANILLA (gSaveContext.ship.quest.id == QUEST_NORMAL)
 #define IS_MASTER_QUEST (gSaveContext.ship.quest.id == QUEST_MASTER)
 #define IS_RANDO (gSaveContext.ship.quest.id == QUEST_RANDOMIZER)
 #define IS_BOSS_RUSH (gSaveContext.ship.quest.id == QUEST_BOSSRUSH)
+#define IS_SPEEDRUN (gSaveContext.ship.quest.id == QUEST_SPEEDRUN)
 
 typedef enum {
     /* 0x00 */ BTN_ENABLED,

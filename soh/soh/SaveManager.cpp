@@ -10,6 +10,7 @@
 #include "Enhancements/randomizer/item.h"
 #include "soh/Enhancements/randomizer/settings.h"
 #include "ResourceManagerHelpers.h"
+#include "soh/Enhancements/speedrun/Speedrun.h"
 
 #include "z64.h"
 #include "functions.h"
@@ -121,6 +122,9 @@ SaveManager::SaveManager() {
     AddLoadFunction("randomizer", 1, LoadRandomizer);
     AddSaveFunction("randomizer", 1, SaveRandomizer, true, SECTION_PARENT_NONE);
 
+    AddLoadFunction("speedrun", 1, LoadSpeedrun);
+    AddSaveFunction("speedrun", 1, SaveSpeedrun, true, SECTION_PARENT_NONE);
+
     AddInitFunction(InitFileImpl);
 
     GameInteractor::Instance->RegisterGameHook<GameInteractor::OnExitGame>(
@@ -144,6 +148,8 @@ SaveManager::SaveManager() {
         }
 
         info.randoSave = 0;
+        info.speedrunSave = 0;
+
         info.requiresMasterQuest = 0;
         info.requiresOriginal = 0;
 
@@ -408,6 +414,34 @@ void SaveManager::SaveRandomizer(SaveContext* saveContext, int sectionID, bool f
     });
 }
 
+void SaveManager::SaveSpeedrun(SaveContext* saveContext, int sectionID, bool fullSave) {
+    if (saveContext->ship.quest.id != QUEST_SPEEDRUN) {
+        return;
+    }
+
+    SaveManager::Instance->SaveArray("options", SR_OPTIONS_MAX, [&](size_t i) {
+        SaveManager::Instance->SaveData("", saveContext->ship.quest.data.speedrun.options[i]);
+    });
+
+    SaveManager::Instance->SaveArray("hash", Speedrun::hashIconIndexes.size(), [&](size_t i) {
+        SaveManager::Instance->SaveData("", Speedrun::hashIconIndexes[i]);
+    });
+}
+
+void SaveManager::LoadSpeedrun() {
+    gSaveContext.ship.quest.id = QUEST_SPEEDRUN;
+
+    SaveManager::Instance->LoadArray("options", SR_OPTIONS_MAX, [](size_t i) {
+        SaveManager::Instance->LoadData("", gSaveContext.ship.quest.data.speedrun.options[i]);
+    });
+
+    SaveManager::Instance->LoadArray("hash", Speedrun::hashIconIndexes.size(), [&](size_t i) {
+        SaveManager::Instance->LoadData("", Speedrun::hashIconIndexes[i]);
+    });
+
+    Speedrun_ApplyRuleset();
+}
+
 // Init() here is an extension of InitSram, and thus not truly an initializer for SaveManager itself. don't put any
 // class initialization stuff here
 void SaveManager::Init() {
@@ -588,6 +622,18 @@ void SaveManager::StartupCheckAndInitMeta(int fileNum) {
     SohUtils::CopyStringToCharArray(fileMetaInfo[fileNum].buildVersion,
                                     metaSaveBlock["sections"]["sohStats"]["data"]["buildVersion"],
                                     ARRAY_COUNT(fileMetaInfo[fileNum].buildVersion));
+
+    bool isSpeedrun = metaSaveBlock["fileType"] == FILE_TYPE_SAVE_SPEEDRUN;
+
+    fileMetaInfo[fileNum].speedrunSave = isSpeedrun;
+
+    if (isSpeedrun) {
+        nlohmann::json& speedrunBlock = metaSaveBlock["sections"]["speedrun"]["data"];
+
+        for (int i = 0; i < ARRAY_COUNT(fileMetaInfo[fileNum].seedHash); i++) {
+            fileMetaInfo[fileNum].seedHash[i] = speedrunBlock["hash"][i];
+        }
+    }
 }
 
 void SaveManager::InitMeta(int fileNum) {
@@ -623,11 +669,19 @@ void SaveManager::InitMeta(int fileNum) {
     fileMetaInfo[fileNum].fishingPoleShuffled =
         IS_RANDO ? (bool)randoContext->GetOption(RSK_SHUFFLE_FISHING_POLE) : false;
 
-    for (int i = 0; i < ARRAY_COUNT(fileMetaInfo[fileNum].seedHash); i++) {
-        fileMetaInfo[fileNum].seedHash[i] = randoContext->hashIconIndexes[i];
+    if (IS_RANDO) {
+        for (size_t i = 0; i < ARRAY_COUNT(fileMetaInfo[fileNum].seedHash); i++) {
+            fileMetaInfo[fileNum].seedHash[i] = randoContext->hashIconIndexes[i];
+        }
+    } else if (IS_SPEEDRUN) {
+        for (size_t i = 0; i < ARRAY_COUNT(fileMetaInfo[fileNum].seedHash); i++) {
+            fileMetaInfo[fileNum].seedHash[i] = Speedrun::hashIconIndexes[i];
+        }
     }
 
     fileMetaInfo[fileNum].randoSave = IS_RANDO;
+    fileMetaInfo[fileNum].speedrunSave = IS_SPEEDRUN;
+
     // If the file is marked as a Master Quest file or if we're randomized and have at least one master quest dungeon,
     // we need the mq otr.
     fileMetaInfo[fileNum].requiresMasterQuest =
@@ -1148,6 +1202,8 @@ void SaveManager::SaveFileThreaded(int fileNum, SaveContext* saveContext, int se
     saveBlock["version"] = 1;
     if (IS_RANDO) {
         saveBlock["fileType"] = FILE_TYPE_SAVE_RANDO;
+    } else if (IS_SPEEDRUN) {
+        saveBlock["fileType"] = FILE_TYPE_SAVE_SPEEDRUN;
     } else {
         saveBlock["fileType"] = FILE_TYPE_SAVE_VANILLA;
     }
@@ -1155,7 +1211,8 @@ void SaveManager::SaveFileThreaded(int fileNum, SaveContext* saveContext, int se
         for (auto& sectionHandlerPair : sectionSaveHandlers) {
             auto& saveFuncInfo = sectionHandlerPair.second;
             // Don't call SaveFuncs for sections that aren't tied to game save
-            if (!saveFuncInfo.saveWithBase || (saveFuncInfo.name == "randomizer" && !IS_RANDO)) {
+            if (!saveFuncInfo.saveWithBase || (saveFuncInfo.name == "randomizer" && !IS_RANDO) ||
+                (saveFuncInfo.name == "speedrun" && !IS_SPEEDRUN)) {
                 continue;
             }
             nlohmann::json& sectionBlock = saveBlock["sections"][saveFuncInfo.name];
@@ -2427,6 +2484,7 @@ void SaveManager::DeleteZeldaFile(int fileNum) {
     }
     fileMetaInfo[fileNum].valid = false;
     fileMetaInfo[fileNum].randoSave = false;
+    fileMetaInfo[fileNum].speedrunSave = false;
     fileMetaInfo[fileNum].requiresMasterQuest = false;
     fileMetaInfo[fileNum].requiresOriginal = false;
     GameInteractor::Instance->ExecuteHooks<GameInteractor::OnDeleteFile>(fileNum);

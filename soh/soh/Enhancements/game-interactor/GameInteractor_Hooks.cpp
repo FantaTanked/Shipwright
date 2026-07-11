@@ -357,6 +357,11 @@ void GameInteractor_ExecuteOnUpdateFileRandomizerOptionSelection(uint8_t optionI
     GameInteractor::Instance->ExecuteHooks<GameInteractor::OnUpdateFileRandomizerOptionSelection>(optionIndex);
 }
 
+void GameInteractor_ExecuteOnUpdateFileSpeedrunOptionSelection(uint8_t optionIndex, uint8_t optionValue) {
+    GameInteractor::Instance->ExecuteHooks<GameInteractor::OnUpdateFileSpeedrunOptionSelection>(optionIndex,
+                                                                                                optionValue);
+}
+
 void GameInteractor_ExecuteOnUpdateFileNameSelection(int16_t charCode) {
     GameInteractor::Instance->ExecuteHooks<GameInteractor::OnUpdateFileNameSelection>(charCode);
 }

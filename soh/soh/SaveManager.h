@@ -15,6 +15,7 @@ typedef struct {
     u32 requiresOriginal;
     u8 seedHash[5];
     u8 randoSave;
+    u8 speedrunSave;
     char buildVersion[50];
     s16 buildVersionMajor;
     s16 buildVersionMinor;
@@ -177,6 +178,9 @@ class SaveManager {
     static void LoadBaseVersion3();
     static void LoadBaseVersion4();
     static void SaveBase(SaveContext* saveContext, int sectionID, bool fullSave);
+
+    static void LoadSpeedrun();
+    static void SaveSpeedrun(SaveContext* saveContext, int sectionID, bool fullSave);
 
     std::vector<InitFunc> initFuncs;
 

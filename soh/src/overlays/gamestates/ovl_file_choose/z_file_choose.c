@@ -726,6 +726,7 @@ void FileChoose_UpdateQuestMenu(GameState* thisx) {
                                    &gSfxDefaultFreqAndVolScale, &gSfxDefaultReverb);
             osSyncPrintf("Selected Dungeon Quest: %d\n", IS_MASTER_QUEST);
             this->prevConfigMode = this->configMode;
+            this->configMode = CM_ROTATE_TO_NAME_ENTRY;
             this->logoAlpha = 0;
             this->kbdButton = FS_KBD_BTN_NONE;
             this->charPage = FS_CHAR_PAGE_ENG;

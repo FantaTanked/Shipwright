@@ -204,15 +204,15 @@
 
     "gSettings.DisableChanges": 1
   },
-  "categories": [
-    { "id": "any_percent", "overrides": {} },
-    { "id": "one_hundred_percent", "overrides": {} },
-    { "id": "all_dungeons", "overrides": {} },
-    { "id": "gsr", "overrides": {} },
-    { "id": "mst", "overrides": {} },
-    { "id": "glitchless", "overrides": {} },
-    { "id": "defeat_ganon", "overrides": {} },
-    { "id": "no_wrong_warp", "overrides": {} },
-    { "id": "nocturne_rta", "overrides": {} }
-  ]
+  "categories": {
+    "any_percent": { "overrides": {} },
+    "one_hundred_percent": { "overrides": {} },
+    "all_dungeons": { "overrides": {} },
+    "gsr": { "overrides": {} },
+    "mst": { "overrides": {} },
+    "glitchless": { "overrides": {} },
+    "defeat_ganon": { "overrides": {} },
+    "no_wrong_warp": { "overrides": {} },
+    "nocturne_rta": { "overrides": {} }
+  }
 }

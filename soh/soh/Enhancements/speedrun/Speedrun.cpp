@@ -357,15 +357,9 @@ void Speedrun_GenerateSettingsHash() {
 
     uint8_t category = gSaveContext.ship.quest.data.speedrun.options[SR_OPTIONS_CATEGORY];
 
-    nlohmann::json effectiveSettings = rulesets["base"];
-    const std::string categoryId = categoryIds[category];
-
-    for (const auto& categoryRules : rulesets["categories"]) {
-        if (categoryRules.value("id", "") == categoryId) {
-            effectiveSettings.update(categoryRules["overrides"]);
-            break;
-        }
-    }
+    nlohmann::json effectiveSettings = rulesets.at("base");
+    const std::string categoryId = categoryIds.at(category);
+    effectiveSettings.update(rulesets.at("categories").at(categoryId).at("overrides"));
 
     nlohmann::json hashInput = {
         { "category", categoryId },
@@ -396,22 +390,12 @@ void Speedrun_ApplyRuleset() {
 
     const nlohmann::json& rulesets = resource->Data;
 
-    Speedrun_BackupSettings(rulesets["base"]);
-    Speedrun_ApplyCVarValues(rulesets["base"]);
+    Speedrun_BackupSettings(rulesets.at("base"));
+    Speedrun_ApplyCVarValues(rulesets.at("base"));
 
     uint8_t category = gSaveContext.ship.quest.data.speedrun.options[SR_OPTIONS_CATEGORY];
-
-    if (category < categoryIds.size() && rulesets.contains("categories")) {
-        for (const auto& categoryRules : rulesets["categories"]) {
-            if (categoryRules.value("id", "") == categoryIds[category]) {
-                if (categoryRules.contains("overrides")) {
-                    Speedrun_ApplyCVarValues(categoryRules["overrides"]);
-                }
-
-                break;
-            }
-        }
-    }
+    const auto& overrides = rulesets.at("categories").at(categoryIds.at(category)).at("overrides");
+    Speedrun_ApplyCVarValues(overrides);
 
     ShipInit::InitAll();
 
